@@ -2,6 +2,8 @@
 
 Convert Logseq pages into fullscreen slide presentations, compose multi-page decks in **Presentation Studio**, and export to standalone HTML or PDF.
 
+![Presentation Studio Screenshot](20261120_195656.png)
+
 ## Features
 
 - **One-click Page Presentation**: Icon next to the page title, toolbar button, `/Present Page` slash command, and `Mod+Shift+P` shortcut convert the current Logseq page and launch directly into full-bleed **Presentation Mode**.

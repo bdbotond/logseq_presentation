@@ -122,12 +122,13 @@ async function buildStandaloneDocument(
         width: 100vw;
         height: 100vh;
         box-sizing: border-box;
-        padding: 48px 64px;
+        padding: 24px 36px;
         page-break-after: always;
         break-after: page;
         align-items: center;
         justify-content: center;
         background: var(--lsp-bg);
+        container-type: size;
       }
       .lsp-export-controls,
       .lsp-export-progress { display: none !important; }
@@ -140,10 +141,11 @@ async function buildStandaloneDocument(
         width: 100%;
         height: 100%;
         box-sizing: border-box;
-        padding: 48px 72px;
+        padding: 24px 36px;
         align-items: center;
         justify-content: center;
-        overflow: auto;
+        overflow: hidden;
+        container-type: size;
       }
       .lsp-export-slide.active { display: flex; }
       .lsp-export-controls {
