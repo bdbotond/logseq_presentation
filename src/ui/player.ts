@@ -27,6 +27,7 @@ export class PresentationPlayer {
   private showGrid = false;
   private blackout = false;
   private presentationMode = false;
+  private isOsFullscreen = false;
   private chromeHideTimer: number | null = null;
   private startedAt = 0;
   private timerHandle: number | null = null;
@@ -84,6 +85,7 @@ export class PresentationPlayer {
       this.logseqMode = 'dark';
     }
 
+    this.isOsFullscreen = false;
     this.syncMainUIBounds();
     logseq.showMainUI({ autoFocus: true });
 
@@ -96,22 +98,54 @@ export class PresentationPlayer {
     window.addEventListener('mousemove', this.mouseMoveHandler);
     document.addEventListener('fullscreenchange', this.fullscreenHandler);
     if (this.presentationMode) {
-      document.documentElement.requestFullscreen?.().catch(() => {});
+      this.enterRealFullscreen();
       this.bumpChromeVisibility();
     }
     await this.renderCurrentSlide();
   }
 
+  private enterRealFullscreen(): void {
+    this.isOsFullscreen = true;
+    try {
+      logseq.App.setFullScreen(true);
+    } catch {
+      // Ignore if host API unavailable
+    }
+    try {
+      (window.frameElement as HTMLIFrameElement | null)?.setAttribute('allowfullscreen', 'true');
+      document.documentElement.requestFullscreen?.().catch(() => {});
+    } catch {
+      // Ignore browser fullscreen denial
+    }
+    this.syncMainUIBounds();
+  }
+
+  private exitRealFullscreen(): void {
+    const wasFullscreen = this.isOsFullscreen || Boolean(document.fullscreenElement);
+    this.isOsFullscreen = false;
+    if (wasFullscreen) {
+      try {
+        logseq.App.setFullScreen(false);
+      } catch {
+        // Ignore if host API unavailable
+      }
+      if (document.fullscreenElement) {
+        document.exitFullscreen?.().catch(() => {});
+      }
+    }
+    this.syncMainUIBounds();
+  }
+
   private syncMainUIBounds(): void {
-    const isOsFullscreen = Boolean(document.fullscreenElement);
+    const full = this.isOsFullscreen || this.presentationMode || Boolean(document.fullscreenElement);
     logseq.setMainUIInlineStyle({
       position: 'fixed',
-      top: isOsFullscreen ? '0' : '48px',
+      top: full ? '0' : '48px',
       left: '0',
       right: '0',
       bottom: '0',
       width: '100vw',
-      height: isOsFullscreen ? '100vh' : 'calc(100vh - 48px)',
+      height: full ? '100vh' : 'calc(100vh - 48px)',
       zIndex: 9999,
       border: 'none',
       background: 'transparent',
@@ -130,9 +164,7 @@ export class PresentationPlayer {
     window.removeEventListener('keydown', this.keyHandler);
     window.removeEventListener('mousemove', this.mouseMoveHandler);
     document.removeEventListener('fullscreenchange', this.fullscreenHandler);
-    if (document.fullscreenElement) {
-      document.exitFullscreen?.().catch(() => {});
-    }
+    this.exitRealFullscreen();
     this.overlay?.remove();
     this.overlay = null;
     if (this.onCloseCallback) {
@@ -156,7 +188,7 @@ export class PresentationPlayer {
     if (!this.overlay) return;
     this.overlay.classList.toggle('lsp-presentation-mode', this.presentationMode);
     if (this.presentationMode) {
-      document.documentElement.requestFullscreen?.().catch(() => {});
+      this.enterRealFullscreen();
       this.bumpChromeVisibility();
     } else {
       if (this.chromeHideTimer !== null) {
@@ -164,9 +196,7 @@ export class PresentationPlayer {
         this.chromeHideTimer = null;
       }
       this.overlay.classList.remove('lsp-chrome-visible');
-      if (document.fullscreenElement) {
-        document.exitFullscreen?.().catch(() => {});
-      }
+      this.exitRealFullscreen();
     }
     const pmBtn = this.overlay.querySelector<HTMLButtonElement>('[data-action="presentation-mode"]');
     if (pmBtn) {
@@ -413,10 +443,10 @@ export class PresentationPlayer {
   }
 
   private toggleFullscreen(): void {
-    if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen?.().catch(() => {});
+    if (!this.isOsFullscreen && !document.fullscreenElement) {
+      this.enterRealFullscreen();
     } else {
-      document.exitFullscreen?.().catch(() => {});
+      this.exitRealFullscreen();
     }
   }
 

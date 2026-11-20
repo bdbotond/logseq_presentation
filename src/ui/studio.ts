@@ -938,6 +938,7 @@ export class PresentationStudio {
       aspectRatio: deck.aspectRatio,
       graphPath: this.graphPath,
       startIndex,
+      presentationMode: true,
       onClose: () => {
         if (this.isOpen) {
           this.applyFullWindowStyle();
