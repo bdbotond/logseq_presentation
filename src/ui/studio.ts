@@ -48,6 +48,7 @@ export class PresentationStudio {
   private constructor() {
     this.keyHandler = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && this.isOpen) {
+        if (PresentationPlayer.getInstance().isOpen()) return;
         const tag = (document.activeElement?.tagName || '').toLowerCase();
         if (tag === 'input' || tag === 'textarea' || tag === 'select') {
           (document.activeElement as HTMLElement).blur();
@@ -63,6 +64,24 @@ export class PresentationStudio {
       PresentationStudio.instance = new PresentationStudio();
     }
     return PresentationStudio.instance;
+  }
+
+  isStudioOpen(): boolean {
+    return this.isOpen;
+  }
+
+  restoreBounds(): void {
+    if (this.isOpen) {
+      this.applyFullWindowStyle();
+    }
+  }
+
+  private clearDeleteConfirm(): void {
+    this.confirmDeleteDeckId = null;
+    if (this.confirmDeleteTimer !== null) {
+      window.clearTimeout(this.confirmDeleteTimer);
+      this.confirmDeleteTimer = null;
+    }
   }
 
   async toggle(): Promise<void> {
@@ -110,6 +129,7 @@ export class PresentationStudio {
       }
     }
 
+    if (!this.isOpen) return;
     this.applyFullWindowStyle();
     logseq.showMainUI({ autoFocus: true });
     window.addEventListener('keydown', this.keyHandler);
@@ -118,11 +138,7 @@ export class PresentationStudio {
 
   close(): void {
     this.isOpen = false;
-    this.confirmDeleteDeckId = null;
-    if (this.confirmDeleteTimer !== null) {
-      window.clearTimeout(this.confirmDeleteTimer);
-      this.confirmDeleteTimer = null;
-    }
+    this.clearDeleteConfirm();
     window.removeEventListener('keydown', this.keyHandler);
     this.container?.remove();
     this.container = null;
@@ -150,13 +166,16 @@ export class PresentationStudio {
     this.loadingBlocks = true;
     if (rerender) await this.render();
 
+    let blocks: PageBlockOutlineItem[] = [];
     try {
-      this.inspectedBlocks = await LogseqService.getInstance().getPageOutlineBlocks(pageName);
+      blocks = await LogseqService.getInstance().getPageOutlineBlocks(pageName);
     } catch {
-      this.inspectedBlocks = [];
+      blocks = [];
     }
+    if (this.inspectedPage !== pageName) return;
+    this.inspectedBlocks = blocks;
     this.loadingBlocks = false;
-    if (rerender) await this.render();
+    if (rerender && this.isOpen) await this.render();
   }
 
   private getEffectivePolarity(deck?: PresentationDeck): 'light' | 'dark' {
@@ -164,6 +183,7 @@ export class PresentationStudio {
   }
 
   private async render(): Promise<void> {
+    if (!this.isOpen) return;
     const store = DeckStore.getInstance();
     const decks = store.getDecks();
     const activeDeck = decks.find((d) => d.id === this.selectedDeckId) ?? decks[0];
@@ -192,7 +212,7 @@ export class PresentationStudio {
     const localDeckOptions = decks
       .map(
         (d) =>
-          `<option value="${d.id}" ${d.id === activeDeck?.id ? 'selected' : ''}>${this.esc(d.title)} (${d.slides.length})</option>`
+          `<option value="${this.esc(d.id)}" ${d.id === activeDeck?.id ? 'selected' : ''}>${this.esc(d.title)} (${d.slides.length})</option>`
       )
       .join('');
     const deckOptions = graphPresPages.length
@@ -241,12 +261,12 @@ export class PresentationStudio {
               return `
                 <div class="lsp-block-row" style="padding-left:${8 + pad}px">
                   <label class="lsp-block-check-label">
-                    <input type="checkbox" class="lsp-block-checkbox" data-uuid="${b.uuid}" ${checked} />
+                    <input type="checkbox" class="lsp-block-checkbox" data-uuid="${this.esc(b.uuid)}" ${checked} />
                     ${badge}
                     <span class="lsp-block-preview">${this.esc(b.preview)}</span>
                     ${childHint}
                   </label>
-                  <button class="lsp-mini-btn" data-action="quick-add-block" data-uuid="${b.uuid}" title="Add this block to current slide">${ICONS.plus}</button>
+                  <button class="lsp-mini-btn" data-action="quick-add-block" data-uuid="${this.esc(b.uuid)}" title="Add this block to current slide">${ICONS.plus}</button>
                 </div>`;
             })
             .join('');
@@ -255,7 +275,7 @@ export class PresentationStudio {
       ? activeDeck.slides
           .map(
             (s, idx) => `
-            <div class="lsp-slide-card ${s.id === activeSlide?.id ? 'active' : ''}" draggable="true" data-drag-slide="${idx}" data-action="select-slide" data-slide-id="${s.id}">
+            <div class="lsp-slide-card ${s.id === activeSlide?.id ? 'active' : ''}" draggable="true" data-drag-slide="${idx}" data-action="select-slide" data-slide-id="${this.esc(s.id)}">
               <div class="lsp-slide-card-top">
                 <span class="lsp-slide-num">${idx + 1}</span>
                 <span class="lsp-slide-card-title">${this.esc(s.title)}</span>
@@ -265,7 +285,7 @@ export class PresentationStudio {
                 <div class="lsp-slide-card-btns">
                   <button class="lsp-mini-btn" data-action="move-slide-up" data-index="${idx}" title="Move up">${ICONS.up}</button>
                   <button class="lsp-mini-btn" data-action="move-slide-down" data-index="${idx}" title="Move down">${ICONS.down}</button>
-                  <button class="lsp-mini-btn lsp-danger" data-action="delete-slide" data-slide-id="${s.id}" title="Delete slide">${ICONS.trash}</button>
+                  <button class="lsp-mini-btn lsp-danger" data-action="delete-slide" data-slide-id="${this.esc(s.id)}" title="Delete slide">${ICONS.trash}</button>
                 </div>
               </div>
             </div>`
@@ -282,13 +302,13 @@ export class PresentationStudio {
             (p, idx) => `
             <div class="lsp-part-chip ${p.id === this.editingPartId ? 'editing' : ''}" draggable="true" data-drag-part="${idx}">
               <span class="lsp-kind lsp-kind-${p.kind === 'page' ? 'h1' : p.kind === 'custom' ? 'code' : 'h2'}">${p.kind.toUpperCase()}</span>
-              <span class="lsp-part-label" ${p.kind === 'custom' ? `data-action="edit-custom-part" data-part-id="${p.id}" style="cursor:pointer"` : ''} title="${this.esc(p.pageName ? `${p.pageName}: ${p.label}` : p.label)}">
+              <span class="lsp-part-label" ${p.kind === 'custom' ? `data-action="edit-custom-part" data-part-id="${this.esc(p.id)}" style="cursor:pointer"` : ''} title="${this.esc(p.pageName ? `${p.pageName}: ${p.label}` : p.label)}">
                 ${p.pageName ? `<strong>${this.esc(p.pageName)}</strong>: ` : ''}${this.esc(p.label)}
               </span>
               <div class="lsp-part-actions">
                 <button class="lsp-mini-btn" data-action="move-part-up" data-index="${idx}" title="Move up">${ICONS.up}</button>
                 <button class="lsp-mini-btn" data-action="move-part-down" data-index="${idx}" title="Move down">${ICONS.down}</button>
-                <button class="lsp-mini-btn lsp-danger" data-action="remove-part" data-part-id="${p.id}" title="Remove">${ICONS.trash}</button>
+                <button class="lsp-mini-btn lsp-danger" data-action="remove-part" data-part-id="${this.esc(p.id)}" title="Remove">${ICONS.trash}</button>
               </div>
             </div>`
           )
@@ -453,6 +473,7 @@ export class PresentationStudio {
 
     try {
       const resolvedSlides = await LogseqService.getInstance().resolveDeckSlideEntry(slideEntry);
+      if (this.container !== root) return;
       const first = resolvedSlides[0];
       if (!first) {
         previewEl.innerHTML = `<div class="lsp-empty-hint">Empty slide.</div>`;
@@ -466,6 +487,7 @@ export class PresentationStudio {
         previewEl.prepend(badge);
       }
       await hydrateMermaidDiagrams(previewEl, polarity);
+      if (this.container !== root) return;
       if (meta?.aspectRatio !== 'fluid' && previewEl.scrollHeight > previewEl.clientHeight + 8) {
         const warn = document.createElement('div');
         warn.className = 'lsp-overflow-badge';
@@ -473,7 +495,9 @@ export class PresentationStudio {
         previewEl.prepend(warn);
       }
     } catch {
-      previewEl.innerHTML = `<div class="lsp-empty-hint">Could not render preview.</div>`;
+      if (this.container === root) {
+        previewEl.innerHTML = `<div class="lsp-empty-hint">Could not render preview.</div>`;
+      }
     }
   }
 
@@ -498,6 +522,7 @@ export class PresentationStudio {
 
     root.querySelector('#lsp-deck-select')?.addEventListener('change', async (e) => {
       const val = (e.target as HTMLSelectElement).value;
+      this.clearDeleteConfirm();
       if (val.startsWith('graph:')) {
         const pageName = val.slice('graph:'.length);
         const loaded = await svc.loadDeckFromGraphPage(pageName);
@@ -524,7 +549,9 @@ export class PresentationStudio {
       if (!activeDeck) return;
       const val = (e.target as HTMLInputElement).value;
       await store.renameDeck(activeDeck.id, val);
-      const opt = root.querySelector<HTMLOptionElement>(`#lsp-deck-select option[value="${activeDeck.id}"]`);
+      const opt = Array.from(root.querySelectorAll<HTMLOptionElement>('#lsp-deck-select option')).find(
+        (o) => o.value === activeDeck.id
+      );
       if (opt) opt.textContent = `${activeDeck.title} (${activeDeck.slides.length})`;
       const footerTitle = root.querySelector<HTMLElement>('.lsp-slide-footer-title');
       if (footerTitle) footerTitle.textContent = activeDeck.title;
@@ -549,9 +576,10 @@ export class PresentationStudio {
       if (!activeDeck || !activeSlide) return;
       const val = (e.target as HTMLInputElement).value;
       await store.updateSlide(activeDeck.id, activeSlide.id, { title: val });
-      const cardTitle = root.querySelector<HTMLElement>(
-        `.lsp-slide-card[data-slide-id="${activeSlide.id}"] .lsp-slide-card-title`
+      const card = Array.from(root.querySelectorAll<HTMLElement>('.lsp-slide-card')).find(
+        (c) => c.dataset.slideId === activeSlide.id
       );
+      const cardTitle = card?.querySelector<HTMLElement>('.lsp-slide-card-title');
       if (cardTitle) cardTitle.textContent = val;
       const previewTitle = root.querySelector<HTMLElement>('#lsp-live-preview .lsp-slide-title');
       if (previewTitle) previewTitle.textContent = val || 'Untitled Slide';
@@ -575,50 +603,68 @@ export class PresentationStudio {
     // Drag and drop for slides and parts
     let dragSlideIdx: number | null = null;
     let dragPartIdx: number | null = null;
+    const toEl = (target: EventTarget | null): Element | null =>
+      target instanceof Element ? target : (target as Node | null)?.parentElement ?? null;
 
     root.addEventListener('dragstart', (e) => {
-      const slideCard = (e.target as HTMLElement).closest<HTMLElement>('[data-drag-slide]');
+      const el = toEl(e.target);
+      const slideCard = el?.closest<HTMLElement>('[data-drag-slide]');
       if (slideCard) {
         dragSlideIdx = Number(slideCard.dataset.dragSlide);
         dragPartIdx = null;
+        if (e.dataTransfer) {
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', String(dragSlideIdx));
+        }
         return;
       }
-      const partChip = (e.target as HTMLElement).closest<HTMLElement>('[data-drag-part]');
+      const partChip = el?.closest<HTMLElement>('[data-drag-part]');
       if (partChip) {
         dragPartIdx = Number(partChip.dataset.dragPart);
         dragSlideIdx = null;
+        if (e.dataTransfer) {
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', String(dragPartIdx));
+        }
       }
     });
 
+    root.addEventListener('dragend', () => {
+      dragSlideIdx = null;
+      dragPartIdx = null;
+    });
+
     root.addEventListener('dragover', (e) => {
-      if (dragSlideIdx !== null && (e.target as HTMLElement).closest('[data-drag-slide]')) {
+      const el = toEl(e.target);
+      if (dragSlideIdx !== null && el?.closest('[data-drag-slide]')) {
         e.preventDefault();
-      } else if (dragPartIdx !== null && (e.target as HTMLElement).closest('[data-drag-part]')) {
+      } else if (dragPartIdx !== null && el?.closest('[data-drag-part]')) {
         e.preventDefault();
       }
     });
 
     root.addEventListener('drop', async (e) => {
+      const el = toEl(e.target);
       if (dragSlideIdx !== null && activeDeck) {
-        const target = (e.target as HTMLElement).closest<HTMLElement>('[data-drag-slide]');
+        const target = el?.closest<HTMLElement>('[data-drag-slide]');
+        const fromIdx = dragSlideIdx;
+        dragSlideIdx = null;
         if (target) {
           e.preventDefault();
           const toIdx = Number(target.dataset.dragSlide);
-          const fromIdx = dragSlideIdx;
-          dragSlideIdx = null;
-          if (fromIdx !== toIdx) {
+          if (!Number.isNaN(fromIdx) && !Number.isNaN(toIdx) && fromIdx !== toIdx) {
             await store.moveSlide(activeDeck.id, fromIdx, toIdx);
             await this.render();
           }
         }
       } else if (dragPartIdx !== null && activeDeck && activeSlide) {
-        const target = (e.target as HTMLElement).closest<HTMLElement>('[data-drag-part]');
+        const target = el?.closest<HTMLElement>('[data-drag-part]');
+        const fromIdx = dragPartIdx;
+        dragPartIdx = null;
         if (target) {
           e.preventDefault();
           const toIdx = Number(target.dataset.dragPart);
-          const fromIdx = dragPartIdx;
-          dragPartIdx = null;
-          if (fromIdx !== toIdx) {
+          if (!Number.isNaN(fromIdx) && !Number.isNaN(toIdx) && fromIdx !== toIdx) {
             await store.movePartInSlide(activeDeck.id, activeSlide.id, fromIdx, toIdx);
             await this.render();
           }
@@ -626,7 +672,7 @@ export class PresentationStudio {
       }
     });
 
-    root.querySelector('#lsp-slide-notes')?.addEventListener('change', async (e) => {
+    root.querySelector('#lsp-slide-notes')?.addEventListener('input', async (e) => {
       if (!activeDeck || !activeSlide) return;
       await store.updateSlide(activeDeck.id, activeSlide.id, {
         notes: (e.target as HTMLTextAreaElement).value,
@@ -690,14 +736,18 @@ export class PresentationStudio {
         this.selectedDeckId = deck.id;
         this.selectedSlideId = null;
         this.editingPartId = null;
-        this.confirmDeleteDeckId = null;
+        this.clearDeleteConfirm();
         await this.render();
       } else if (action === 'export-json' && activeDeck) {
         const json = JSON.stringify(activeDeck, null, 2);
         const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
-        const safeName = activeDeck.title.toLowerCase().replace(/[^a-z0-9-_]+/g, '-') || 'deck';
+        const safeName =
+          activeDeck.title
+            .toLowerCase()
+            .replace(/[^a-z0-9-_]+/g, '-')
+            .replace(/^-+|-+$/g, '') || 'deck';
         a.href = url;
         a.download = `${safeName}.deck.json`;
         document.body.appendChild(a);
@@ -736,12 +786,13 @@ export class PresentationStudio {
           if (this.confirmDeleteTimer !== null) window.clearTimeout(this.confirmDeleteTimer);
           this.confirmDeleteTimer = window.setTimeout(() => {
             this.confirmDeleteDeckId = null;
+            this.confirmDeleteTimer = null;
             if (this.isOpen) this.render();
           }, 3500);
           await this.render();
           return;
         }
-        this.confirmDeleteDeckId = null;
+        this.clearDeleteConfirm();
         await store.deleteDeck(activeDeck.id);
         let decks = store.getDecks();
         if (decks.length === 0) {
@@ -954,6 +1005,7 @@ export class PresentationStudio {
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 }

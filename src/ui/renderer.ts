@@ -6,11 +6,50 @@ import { resolveAssetPath } from '../services/slideParser';
 
 let mermaidModule: any = null;
 let mermaidCounter = 0;
+let placeholderNonce = 0;
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function isSafeUrl(url: string): boolean {
+  const cleaned = url.replace(/[\u0000-\u0020]+/g, '').trim().toLowerCase();
+  if (!cleaned) return false;
+  if (/^(?:javascript|vbscript):/.test(cleaned)) return false;
+  if (cleaned.startsWith('data:') && !/^data:image\/(?:png|jpe?g|gif|webp|avif|bmp|ico);/i.test(cleaned)) {
+    return false;
+  }
+  return true;
+}
 
 marked.use({
   gfm: true,
   breaks: true,
   renderer: {
+    html({ text }: { text: string }) {
+      return escapeHtml(text);
+    },
+    link({ href, title, tokens }: { href: string; title?: string | null; tokens: any[] }) {
+      const label = this.parser.parseInline(tokens);
+      if (!href || !isSafeUrl(href)) {
+        return label;
+      }
+      const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
+      const targetAttr = /^https?:/i.test(href) ? ' target="_blank" rel="noopener noreferrer"' : '';
+      return `<a href="${escapeHtml(href)}"${titleAttr}${targetAttr}>${label}</a>`;
+    },
+    image({ href, title, text }: { href: string; title?: string | null; text: string }) {
+      if (!href || !isSafeUrl(href)) {
+        return escapeHtml(text || '');
+      }
+      const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
+      return `<img src="${escapeHtml(href)}" alt="${escapeHtml(text || '')}" class="lsp-img"${titleAttr} />`;
+    },
     code({ text, lang }: { text: string; lang?: string }) {
       const language = (lang || '').trim().split(/\s+/)[0];
       let highlighted: string;
@@ -32,41 +71,46 @@ marked.use({
   },
 });
 
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-function renderMath(src: string): string {
+function renderMath(
+  src: string,
+  addInline: (html: string) => string,
+  addBlock: (html: string) => string
+): string {
   let out = src.replace(/\$\$([\s\S]+?)\$\$/g, (_, tex) => {
     try {
-      return `<div class="lsp-math-block">${katex.renderToString(tex.trim(), {
-        displayMode: true,
-        throwOnError: false,
-      })}</div>`;
+      return `\n\n${addBlock(
+        `<div class="lsp-math-block">${katex.renderToString(tex.trim(), {
+          displayMode: true,
+          throwOnError: false,
+        })}</div>`
+      )}\n\n`;
     } catch {
-      return `<pre>${escapeHtml(tex)}</pre>`;
+      return `\n\n${addBlock(`<pre>${escapeHtml(tex)}</pre>`)}\n\n`;
     }
   });
 
   out = out.replace(/(?<!\\)\$([^\n$]+?)\$/g, (_, tex) => {
     try {
-      return katex.renderToString(tex.trim(), {
-        displayMode: false,
-        throwOnError: false,
-      });
+      return addInline(
+        katex.renderToString(tex.trim(), {
+          displayMode: false,
+          throwOnError: false,
+        })
+      );
     } catch {
-      return `<code>${escapeHtml(tex)}</code>`;
+      return addInline(`<code>${escapeHtml(tex)}</code>`);
     }
   });
 
   return out;
 }
 
-function preprocessLogseqSyntax(raw: string, graphPath?: string): string {
+function preprocessLogseqSyntax(
+  raw: string,
+  graphPath: string | undefined,
+  addInline: (html: string) => string,
+  addBlock: (html: string) => string
+): string {
   let text = raw;
 
   // Handle Logseq image attributes: ![alt](path){:height 200, :width 300}
@@ -74,20 +118,24 @@ function preprocessLogseqSyntax(raw: string, graphPath?: string): string {
     /!\[([^\]]*)\]\(([^)]+)\)\{([^}]+)\}/g,
     (_, alt, url, attrs) => {
       const resolved = resolveAssetPath(url, graphPath);
+      if (!isSafeUrl(resolved)) return escapeHtml(alt);
       const heightMatch = attrs.match(/:height\s+(\d+)/);
       const widthMatch = attrs.match(/:width\s+(\d+)/);
       const styles: string[] = [];
       if (heightMatch) styles.push(`height:${heightMatch[1]}px`);
       if (widthMatch) styles.push(`width:${widthMatch[1]}px`);
       const styleAttr = styles.length ? ` style="${styles.join(';')}"` : '';
-      return `<img src="${escapeHtml(resolved)}" alt="${escapeHtml(alt)}" class="lsp-img"${styleAttr} />`;
+      return addInline(
+        `<img src="${escapeHtml(resolved)}" alt="${escapeHtml(alt)}" class="lsp-img"${styleAttr} />`
+      );
     }
   );
 
   // Standard markdown images ![alt](path)
   text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) => {
     const resolved = resolveAssetPath(url, graphPath);
-    return `<img src="${escapeHtml(resolved)}" alt="${escapeHtml(alt)}" class="lsp-img" />`;
+    if (!isSafeUrl(resolved)) return escapeHtml(alt);
+    return addInline(`<img src="${escapeHtml(resolved)}" alt="${escapeHtml(alt)}" class="lsp-img" />`);
   });
 
   // Video embeds {{video url}} or {{youtube url}}
@@ -97,26 +145,32 @@ function preprocessLogseqSyntax(raw: string, graphPath?: string): string {
       /(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]+)/
     );
     if (ytMatch) {
-      return `<div class="lsp-video"><iframe src="https://www.youtube.com/embed/${ytMatch[1]}" frameborder="0" allowfullscreen></iframe></div>`;
+      return `\n\n${addBlock(
+        `<div class="lsp-video"><iframe src="https://www.youtube.com/embed/${ytMatch[1]}" referrerpolicy="strict-origin-when-cross-origin" frameborder="0" allowfullscreen></iframe></div>`
+      )}\n\n`;
     }
-    return `<div class="lsp-video"><video controls src="${escapeHtml(resolveAssetPath(cleanUrl, graphPath))}"></video></div>`;
+    const resolved = resolveAssetPath(cleanUrl, graphPath);
+    if (!isSafeUrl(resolved)) return '';
+    return `\n\n${addBlock(
+      `<div class="lsp-video"><video controls src="${escapeHtml(resolved)}"></video></div>`
+    )}\n\n`;
   });
 
   // Task status markers at start
   text = text.replace(
     /^(TODO|DOING|DONE|LATER|NOW|WAITING|CANCELED)\s+/gm,
-    '<span class="lsp-task lsp-task-$1">$1</span> '
+    (_, status) => `${addInline(`<span class="lsp-task lsp-task-${status}">${status}</span>`)} `
   );
 
   // Highlights ==text== or ^^text^^
   text = text.replace(/==([^=]+)==|\^\^([^^]+)\^\^/g, (_, a, b) => {
-    return `<mark class="lsp-mark">${escapeHtml(a ?? b)}</mark>`;
+    return addInline(`<mark class="lsp-mark">${escapeHtml(a ?? b)}</mark>`);
   });
 
   // Page references [[Page]]
   text = text.replace(/\[\[([^\]]+)\]\]/g, (_, page) => {
     const safe = escapeHtml(page);
-    return `<span class="lsp-page-ref" data-page-ref="${safe}">${safe}</span>`;
+    return addInline(`<span class="lsp-page-ref" data-page-ref="${safe}">${safe}</span>`);
   });
 
   // Tags #tag (only when preceded by start/whitespace, never markdown headings or hex colors)
@@ -124,57 +178,82 @@ function preprocessLogseqSyntax(raw: string, graphPath?: string): string {
     if (/^(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(tag)) {
       return match;
     }
-    return `${pre}<span class="lsp-tag">#${escapeHtml(tag)}</span>`;
+    return `${pre}${addInline(`<span class="lsp-tag">#${escapeHtml(tag)}</span>`)}`;
   });
 
   return text;
 }
 
 export function renderMarkdownText(raw: string, graphPath?: string): string {
+  const nonce = ++placeholderNonce;
   const mermaidBlocks: string[] = [];
   const codeBlocks: string[] = [];
   const inlineCodes: string[] = [];
+  const safeInline: string[] = [];
+  const safeBlock: string[] = [];
+
+  const addInline = (html: string): string => {
+    const idx = safeInline.length;
+    safeInline.push(html);
+    return `@@LSP${nonce}_INLINE_${idx}@@`;
+  };
+  const addBlock = (html: string): string => {
+    const idx = safeBlock.length;
+    safeBlock.push(html);
+    return `@@LSP${nonce}_BLOCK_${idx}@@`;
+  };
 
   // 1. Extract mermaid blocks
   let text = raw.replace(/```mermaid\s*\n([\s\S]*?)```/gi, (_, code) => {
     const idx = mermaidBlocks.length;
     mermaidBlocks.push(code.trim());
-    return `\n\n@@MERMAID_${idx}@@\n\n`;
+    return `\n\n@@LSP${nonce}_MERMAID_${idx}@@\n\n`;
   });
 
   // 2. Protect fenced code blocks from Logseq/math transforms
   text = text.replace(/```[\s\S]*?```/g, (match) => {
     const idx = codeBlocks.length;
     codeBlocks.push(match);
-    return `@@CODEBLOCK_${idx}@@`;
+    return `@@LSP${nonce}_CODEBLOCK_${idx}@@`;
   });
 
   // 3. Protect inline code spans
   text = text.replace(/`[^`\n]+`/g, (match) => {
     const idx = inlineCodes.length;
     inlineCodes.push(match);
-    return `@@INLINECODE_${idx}@@`;
+    return `@@LSP${nonce}_INLINECODE_${idx}@@`;
   });
 
-  // 4. Apply Logseq syntax & math
-  text = preprocessLogseqSyntax(text, graphPath);
-  text = renderMath(text);
+  // 4. Render math before Logseq syntax so LaTeX is not mangled by ==, ^^, #, [[...]]
+  text = renderMath(text, addInline, addBlock);
+  text = preprocessLogseqSyntax(text, graphPath, addInline, addBlock);
 
-  // 5. Restore protected code blocks before marked parses markdown
+  // 5. Restore protected code blocks before marked parses markdown (function replacer avoids $ patterns)
   codeBlocks.forEach((block, idx) => {
-    text = text.replace(`@@CODEBLOCK_${idx}@@`, block);
+    text = text.replace(`@@LSP${nonce}_CODEBLOCK_${idx}@@`, () => block);
   });
   inlineCodes.forEach((code, idx) => {
-    text = text.replace(`@@INLINECODE_${idx}@@`, code);
+    text = text.replace(`@@LSP${nonce}_INLINECODE_${idx}@@`, () => code);
   });
 
   let html = marked.parse(text) as string;
 
+  // 6. Restore trusted generated HTML & mermaid blocks after marked sanitizes raw HTML
+  safeBlock.forEach((snippet, idx) => {
+    html = html.replace(
+      new RegExp(`(?:<p>)?@@LSP${nonce}_BLOCK_${idx}@@(?:</p>)?`, 'g'),
+      () => snippet
+    );
+  });
+  safeInline.forEach((snippet, idx) => {
+    html = html.replace(`@@LSP${nonce}_INLINE_${idx}@@`, () => snippet);
+  });
   mermaidBlocks.forEach((code, idx) => {
     const id = `lsp-mermaid-${++mermaidCounter}`;
+    const snippet = `<div class="mermaid lsp-mermaid" id="${id}">${escapeHtml(code)}</div>`;
     html = html.replace(
-      new RegExp(`(?:<p>)?@@MERMAID_${idx}@@(?:</p>)?`, 'g'),
-      `<div class="mermaid lsp-mermaid" id="${id}">${escapeHtml(code)}</div>`
+      new RegExp(`(?:<p>)?@@LSP${nonce}_MERMAID_${idx}@@(?:</p>)?`, 'g'),
+      () => snippet
     );
   });
 
@@ -338,7 +417,7 @@ export async function hydrateMermaidDiagrams(
     mermaidModule.initialize({
       startOnLoad: false,
       theme: theme === 'dark' ? 'dark' : 'default',
-      securityLevel: 'loose',
+      securityLevel: 'strict',
     });
     await mermaidModule.run({ nodes: Array.from(nodes) });
   } catch (err) {

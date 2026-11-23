@@ -1,28 +1,72 @@
 import '@logseq/libs';
-import katexCss from 'katex/dist/katex.min.css?inline';
 import hostCss from './styles/host.css?inline';
-import mainCss from './styles/main.css?inline';
 import { LogseqService } from './services/logseqService';
 import { ICONS } from './ui/icons';
-import { PresentationPlayer } from './ui/player';
-import { PresentationStudio } from './ui/studio';
+import type { PresentationPlayer } from './ui/player';
+import type { PresentationStudio } from './ui/studio';
+
+let stylesInjected = false;
+let playerInstance: PresentationPlayer | null = null;
+let studioInstance: PresentationStudio | null = null;
+
+async function ensurePluginStyles(): Promise<void> {
+  if (stylesInjected) return;
+  const [{ default: katexCss }, { default: mainCss }] = await Promise.all([
+    import('katex/dist/katex.min.css?inline'),
+    import('./styles/main.css?inline'),
+  ]);
+  if (stylesInjected) return;
+  const styleEl = document.createElement('style');
+  styleEl.textContent = `${katexCss}\n${mainCss}`;
+  document.head.appendChild(styleEl);
+  stylesInjected = true;
+}
+
+async function getPlayer(): Promise<PresentationPlayer> {
+  await ensurePluginStyles();
+  const { PresentationPlayer: PlayerClass } = await import('./ui/player');
+  playerInstance = PlayerClass.getInstance();
+  return playerInstance;
+}
+
+async function getStudio(): Promise<PresentationStudio> {
+  await ensurePluginStyles();
+  const { PresentationStudio: StudioClass } = await import('./ui/studio');
+  studioInstance = StudioClass.getInstance();
+  return studioInstance;
+}
 
 async function presentCurrentPage(): Promise<void> {
-  const svc = LogseqService.getInstance();
-  const pageName = await svc.getCurrentPageName();
-  if (!pageName) {
-    logseq.UI.showMsg('Open a Logseq page first to present it.', 'warning');
-    return;
-  }
+  try {
+    const svc = LogseqService.getInstance();
+    const pageName = await svc.getCurrentPageName();
+    if (!pageName) {
+      logseq.UI.showMsg('Open a Logseq page first to present it.', 'warning');
+      return;
+    }
 
-  const slides = await svc.fetchPageSlides(pageName);
-  const graphPath = await svc.getGraphPath();
-  await PresentationPlayer.getInstance().open({
-    title: pageName,
-    slides,
-    graphPath,
-    presentationMode: true,
-  });
+    const [slides, graphPath, player] = await Promise.all([
+      svc.fetchPageSlides(pageName),
+      svc.getGraphPath(),
+      getPlayer(),
+    ]);
+    const studio = studioInstance;
+    await player.open({
+      title: pageName,
+      slides,
+      graphPath,
+      presentationMode: true,
+      onClose: studio?.isStudioOpen()
+        ? () => {
+            if (studio.isStudioOpen()) studio.restoreBounds();
+            else logseq.hideMainUI();
+          }
+        : undefined,
+    });
+  } catch (err) {
+    console.error('[Presentation] Failed to present current page:', err);
+    logseq.UI.showMsg('Failed to present current page.', 'error');
+  }
 }
 
 function mountLeftSidebarNav(): void {
@@ -57,10 +101,7 @@ function mountPageTitleButton(): void {
 async function main(): Promise<void> {
   console.log('[Presentation] Plugin loading...');
 
-  // Inject plugin styles into iframe and host-only styles into Logseq host DOM
-  const styleEl = document.createElement('style');
-  styleEl.textContent = `${katexCss}\n${mainCss}`;
-  document.head.appendChild(styleEl);
+  // Inject host-only styles into Logseq host DOM (plugin UI styles load lazily)
   logseq.provideStyle(hostCss);
 
   logseq.provideModel({
@@ -68,10 +109,10 @@ async function main(): Promise<void> {
       await presentCurrentPage();
     },
     async openStudio() {
-      await PresentationStudio.getInstance().open();
+      await (await getStudio()).open();
     },
     async toggleStudio() {
-      await PresentationStudio.getInstance().toggle();
+      await (await getStudio()).toggle();
     },
   });
 
@@ -98,7 +139,7 @@ async function main(): Promise<void> {
   });
 
   logseq.Editor.registerSlashCommand('Presentation Studio', async () => {
-    await PresentationStudio.getInstance().open();
+    await (await getStudio()).open();
   });
 
   logseq.App.registerCommandPalette(
@@ -118,24 +159,42 @@ async function main(): Promise<void> {
       label: 'Presentation: Open Presentation Studio',
     },
     async () => {
-      await PresentationStudio.getInstance().toggle();
+      await (await getStudio()).toggle();
     }
   );
 
   mountLeftSidebarNav();
   mountPageTitleButton();
 
+  let routeMountTimer: number | null = null;
+  let sidebarMountTimer: number | null = null;
+
   logseq.App.onRouteChanged(() => {
-    setTimeout(() => {
+    if (routeMountTimer !== null) window.clearTimeout(routeMountTimer);
+    routeMountTimer = window.setTimeout(() => {
+      routeMountTimer = null;
       mountLeftSidebarNav();
       mountPageTitleButton();
     }, 150);
   });
 
   logseq.App.onSidebarVisibleChanged(() => {
-    setTimeout(() => {
+    if (sidebarMountTimer !== null) window.clearTimeout(sidebarMountTimer);
+    sidebarMountTimer = window.setTimeout(() => {
+      sidebarMountTimer = null;
       mountLeftSidebarNav();
     }, 150);
+  });
+
+  logseq.beforeunload(async () => {
+    if (routeMountTimer !== null) window.clearTimeout(routeMountTimer);
+    if (sidebarMountTimer !== null) window.clearTimeout(sidebarMountTimer);
+    if (playerInstance?.isOpen()) {
+      playerInstance.close();
+    }
+    if (studioInstance?.isStudioOpen()) {
+      studioInstance.close();
+    }
   });
 
   console.log('[Presentation] Plugin loaded.');

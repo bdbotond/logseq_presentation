@@ -39,7 +39,17 @@ export class PresentationPlayer {
   private constructor() {
     this.keyHandler = (e: KeyboardEvent) => this.handleKeyDown(e);
     this.mouseMoveHandler = () => this.bumpChromeVisibility();
-    this.fullscreenHandler = () => this.syncMainUIBounds();
+    this.fullscreenHandler = () => {
+      if (!document.fullscreenElement && this.isOsFullscreen) {
+        this.isOsFullscreen = false;
+        try {
+          logseq.App.setFullScreen(false);
+        } catch {
+          // Ignore if host API unavailable
+        }
+      }
+      this.syncMainUIBounds();
+    };
   }
 
   static getInstance(): PresentationPlayer {
@@ -47,6 +57,10 @@ export class PresentationPlayer {
       PresentationPlayer.instance = new PresentationPlayer();
     }
     return PresentationPlayer.instance;
+  }
+
+  isOpen(): boolean {
+    return this.overlay !== null;
   }
 
   private resolveEffectivePolarity(): 'light' | 'dark' {
@@ -69,6 +83,15 @@ export class PresentationPlayer {
     presentationMode?: boolean;
     onClose?: () => void;
   }): Promise<void> {
+    if (this.timerHandle !== null) {
+      window.clearInterval(this.timerHandle);
+      this.timerHandle = null;
+    }
+    if (this.chromeHideTimer !== null) {
+      window.clearTimeout(this.chromeHideTimer);
+      this.chromeHideTimer = null;
+    }
+
     this.title = options.title;
     this.slides = options.slides;
     this.theme = options.theme ?? 'logseq';
@@ -89,6 +112,7 @@ export class PresentationPlayer {
     this.syncMainUIBounds();
     logseq.showMainUI({ autoFocus: true });
 
+    this.showNotes = false;
     this.showGrid = false;
     this.blackout = false;
     this.startedAt = Date.now();
@@ -268,6 +292,7 @@ export class PresentationPlayer {
       this.theme = themeSelect.value as ThemeId;
       el.className = this.buildOverlayClass();
       applyLogseqThemeVars(el, this.theme);
+      if (this.presentationMode) this.bumpChromeVisibility();
       this.renderCurrentSlide();
     });
 
@@ -377,8 +402,6 @@ export class PresentationPlayer {
     });
     frame.scrollTop = 0;
 
-    await hydrateMermaidDiagrams(frame, this.resolveEffectivePolarity());
-
     const sourceBtn = this.overlay.querySelector<HTMLButtonElement>('[data-action="source"]');
     if (sourceBtn) {
       sourceBtn.hidden = !slide.sourceUuid && !slide.sourcePage;
@@ -394,6 +417,8 @@ export class PresentationPlayer {
     const notesContent = this.overlay.querySelector<HTMLElement>('.lsp-notes-content')!;
     notesContent.textContent = slide.notes || 'No speaker notes for this slide.';
     notesDrawer.hidden = !this.showNotes;
+
+    await hydrateMermaidDiagrams(frame, this.resolveEffectivePolarity());
   }
 
   private toggleNotes(): void {
@@ -439,7 +464,8 @@ export class PresentationPlayer {
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   private toggleFullscreen(): void {
@@ -451,8 +477,15 @@ export class PresentationPlayer {
   }
 
   private handleKeyDown(e: KeyboardEvent): void {
+    const activeEl = document.activeElement as HTMLElement | null;
+    const isFormControl = Boolean(activeEl?.closest('input, textarea, select'));
+
     if (e.key === 'Escape') {
       e.preventDefault();
+      if (isFormControl) {
+        activeEl?.blur();
+        return;
+      }
       if (this.blackout) {
         this.toggleBlackout(false);
         return;
@@ -462,7 +495,14 @@ export class PresentationPlayer {
         return;
       }
       this.close();
-    } else if (e.key.toLowerCase() === 'b') {
+      return;
+    }
+
+    if (isFormControl || e.ctrlKey || e.metaKey || e.altKey) {
+      return;
+    }
+
+    if (e.key.toLowerCase() === 'b') {
       e.preventDefault();
       this.toggleBlackout();
     } else if (e.key.toLowerCase() === 'g') {

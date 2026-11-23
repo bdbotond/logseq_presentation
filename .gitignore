@@ -1,4 +1,10 @@
 node_modules
 dist
+logseq-presentation
+coverage
 *.zip
+*.log
+.env*
 .DS_Store
+.git
+

@@ -14,7 +14,17 @@ function escapeHtml(text: string): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+export function sanitizeExportKatexCss(css: string): string {
+  return css
+    .replace(
+      /url\((['"]?)[^)'"]*(?:\/|^)(KaTeX_[A-Za-z0-9_]+-[A-Za-z]+)(?:-[A-Za-z0-9_-]+)?\.(woff2|woff|ttf)\1\)/g,
+      'url(https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/fonts/$2.$3)'
+    )
+    .replace(/url\((['"]?)file:\/\/[^)'"]+\1\)/gi, 'none');
 }
 
 async function renderSlidesWithMermaid(
@@ -68,9 +78,13 @@ async function buildStandaloneDocument(
       ? (() => {
           const entries = Object.entries(readLogseqHostThemeVars());
           if (entries.length === 0) return '';
-          return `:root, body { ${entries.map(([k, v]) => `${k}: ${v};`).join(' ')} }`;
+          return `:root, body { ${entries
+            .map(([k, v]) => `${k}: ${v.replace(/<\/style/gi, '')};`)
+            .join(' ')} }`;
         })()
       : '';
+
+  const effectiveKatexCss = forPrint ? katexCss : sanitizeExportKatexCss(katexCss);
 
   const interactiveScript = forPrint
     ? `<script>
@@ -85,12 +99,18 @@ async function buildStandaloneDocument(
           const bar = document.getElementById('bar');
           let idx = 0;
           function show(n) {
+            if (slides.length === 0) {
+              if (counter) counter.textContent = '0 / 0';
+              if (bar) bar.style.width = '0%';
+              return;
+            }
             idx = Math.max(0, Math.min(slides.length - 1, n));
             slides.forEach((s, i) => s.classList.toggle('active', i === idx));
             if (counter) counter.textContent = (idx + 1) + ' / ' + slides.length;
-            if (bar) bar.style.width = (((idx + 1) / Math.max(1, slides.length)) * 100) + '%';
+            if (bar) bar.style.width = (((idx + 1) / slides.length) * 100) + '%';
           }
           document.addEventListener('keydown', (e) => {
+            if (e.ctrlKey || e.metaKey || e.altKey) return;
             if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') { e.preventDefault(); show(idx + 1); }
             if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); show(idx - 1); }
             if (e.key === 'Home') show(0);
@@ -112,6 +132,7 @@ async function buildStandaloneDocument(
       html, body {
         margin: 0;
         padding: 0;
+        height: auto;
         -webkit-print-color-adjust: exact;
         print-color-adjust: exact;
         background: var(--lsp-bg) !important;
@@ -123,12 +144,17 @@ async function buildStandaloneDocument(
         height: 100vh;
         box-sizing: border-box;
         padding: 24px 36px;
+        overflow: hidden;
         page-break-after: always;
         break-after: page;
         align-items: center;
         justify-content: center;
         background: var(--lsp-bg);
         container-type: size;
+      }
+      .lsp-export-slide:last-child {
+        page-break-after: auto;
+        break-after: auto;
       }
       .lsp-export-controls,
       .lsp-export-progress { display: none !important; }
@@ -166,7 +192,7 @@ async function buildStandaloneDocument(
   <meta charset="UTF-8" />
   <title>${escapeHtml(title)}</title>
   <style>
-    ${katexCss}
+    ${effectiveKatexCss}
     ${mainCss}
     ${logseqVarsCss}
     ${extraStyles}
@@ -178,7 +204,7 @@ async function buildStandaloneDocument(
   </main>
   <div class="lsp-export-controls">
     <button id="prev">←</button>
-    <span id="counter">1 / ${slides.length}</span>
+    <span id="counter">${slides.length > 0 ? `1 / ${slides.length}` : '0 / 0'}</span>
     <button id="next">→</button>
   </div>
   <div class="lsp-export-progress"><div id="bar" class="lsp-export-progress-bar"></div></div>
@@ -198,7 +224,11 @@ export async function exportDeckToHtml(
   const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  const safeName = title.toLowerCase().replace(/[^a-z0-9-_]+/g, '-') || 'presentation';
+  const safeName =
+    title
+      .toLowerCase()
+      .replace(/[^a-z0-9-_]+/g, '-')
+      .replace(/^-+|-+$/g, '') || 'presentation';
   a.href = url;
   a.download = `${safeName}.html`;
   document.body.appendChild(a);
@@ -223,16 +253,24 @@ export async function printDeckToPdf(
   iframe.style.opacity = '0';
   document.body.appendChild(iframe);
 
-  const doc = iframe.contentWindow?.document;
-  if (!doc) {
+  const win = iframe.contentWindow;
+  const doc = win?.document;
+  if (!doc || !win) {
     iframe.remove();
     return;
   }
+
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    iframe.remove();
+  };
+  win.addEventListener('afterprint', cleanup, { once: true });
+
   doc.open();
   doc.write(html);
   doc.close();
 
-  setTimeout(() => {
-    iframe.remove();
-  }, 60_000);
+  setTimeout(cleanup, 60_000);
 }

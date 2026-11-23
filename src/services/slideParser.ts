@@ -10,10 +10,36 @@ import type {
   ThemeId,
 } from '../types';
 
-const PROP_LINE_RE = /^([a-zA-Z0-9_-]+)::\s*(.*)$/;
+const PROP_LINE_RE = /^([a-zA-Z0-9_-]+)::(?:\s+(.*)|\s*)$/;
 const SLIDE_TAG_RE = /(?:^|\s)#slide\b|\[\[slide\]\]/i;
 const DIVIDER_RE = /^(?:---+|\*\*\*+)$/;
 const H1_RE = /^#\s+(.+)$/;
+
+function mapOutsideFences(text: string, fn: (line: string) => string): string {
+  let inFence = false;
+  return text
+    .split(/\r?\n/)
+    .map((line) => {
+      if (/^\s*```/.test(line)) {
+        inFence = !inFence;
+        return line;
+      }
+      return inFence ? line : fn(line);
+    })
+    .join('\n');
+}
+
+function someLineOutsideFences(text: string, predicate: (line: string) => boolean): boolean {
+  let inFence = false;
+  for (const line of text.split(/\r?\n/)) {
+    if (/^\s*```/.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (!inFence && predicate(line)) return true;
+  }
+  return false;
+}
 
 export function stripBlockProperties(content: string): {
   clean: string;
@@ -23,7 +49,7 @@ export function stripBlockProperties(content: string): {
   const kept: string[] = [];
   let inFence = false;
 
-  for (const line of content.split('\n')) {
+  for (const line of content.split(/\r?\n/)) {
     if (/^\s*```/.test(line)) {
       inFence = !inFence;
       kept.push(line);
@@ -31,7 +57,7 @@ export function stripBlockProperties(content: string): {
     }
     const match = !inFence ? line.match(PROP_LINE_RE) : null;
     if (match) {
-      properties[match[1].toLowerCase()] = match[2].trim();
+      properties[match[1].toLowerCase()] = (match[2] ?? '').trim();
     } else {
       kept.push(line);
     }
@@ -43,13 +69,21 @@ export function stripBlockProperties(content: string): {
   };
 }
 
+function getRawProp(
+  rawProps: Record<string, unknown> | undefined,
+  kebab: string,
+  camel: string
+): unknown {
+  if (!rawProps) return undefined;
+  return rawProps[kebab] !== undefined ? rawProps[kebab] : rawProps[camel];
+}
+
 function parseLayout(
   parsedProps: Record<string, string>,
   rawProps?: Record<string, unknown>
 ): SlideLayout | undefined {
-  const raw =
-    (typeof rawProps?.['slide-layout'] === 'string' && rawProps['slide-layout']) ||
-    parsedProps['slide-layout'];
+  const rawProp = getRawProp(rawProps, 'slide-layout', 'slideLayout');
+  const raw = (typeof rawProp === 'string' && rawProp) || parsedProps['slide-layout'];
   const val = raw?.trim().toLowerCase();
   if (val === 'cover' || val === 'two-column' || val === 'default') return val;
   return undefined;
@@ -59,8 +93,18 @@ function isNoAutoSplit(
   parsedProps: Record<string, string>,
   rawProps?: Record<string, unknown>
 ): boolean {
-  const raw = rawProps?.['slide-no-split'] ?? parsedProps['slide-no-split'];
+  const raw = getRawProp(rawProps, 'slide-no-split', 'slideNoSplit') ?? parsedProps['slide-no-split'];
   return raw === true || String(raw ?? '').trim().toLowerCase() === 'true';
+}
+
+function getSlideNotesProp(
+  parsedProps: Record<string, string>,
+  rawProps?: Record<string, unknown>
+): string | undefined {
+  const raw = getRawProp(rawProps, 'slide-notes', 'slideNotes');
+  if (typeof raw === 'string' && raw.trim()) return raw.trim();
+  if (parsedProps['slide-notes']) return parsedProps['slide-notes'];
+  return undefined;
 }
 
 export const DEFAULT_SLIDE_BUDGET = 14;
@@ -99,6 +143,7 @@ export function estimateBlockWeight(block: SlideBlockItem, depth = 0): number {
 
 function splitBodyBlocks(blocks: SlideBlockItem[], budget: number): SlideBlockItem[][] {
   if (blocks.length === 0) return [[]];
+  const safeBudget = Math.max(1, budget);
 
   const chunks: SlideBlockItem[][] = [];
   let current: SlideBlockItem[] = [];
@@ -115,10 +160,10 @@ function splitBodyBlocks(blocks: SlideBlockItem[], budget: number): SlideBlockIt
   for (const block of blocks) {
     const w = estimateBlockWeight(block, 0);
 
-    // If a single block overflows and has multiple children, split its children across slides
-    if (w > budget && block.children.length >= 2) {
+    // If a single block overflows and has children, recursively split its children across slides
+    if (w > safeBudget && block.children.length >= 1) {
       const ownWeight = estimateBlockWeight({ ...block, children: [] }, 0);
-      const childBudget = Math.max(4, budget - ownWeight);
+      const childBudget = Math.max(4, safeBudget - ownWeight);
       const childChunks = splitBodyBlocks(block.children, childBudget);
 
       for (const childChunk of childChunks) {
@@ -127,19 +172,19 @@ function splitBodyBlocks(blocks: SlideBlockItem[], budget: number): SlideBlockIt
           children: childChunk,
         };
         const pieceWeight = estimateBlockWeight(piece, 0);
-        if (current.length > 0 && currentWeight + pieceWeight > budget) {
+        if (current.length > 0 && currentWeight + pieceWeight > safeBudget) {
           flush();
         }
         current.push(piece);
         currentWeight += pieceWeight;
-        if (currentWeight >= budget) {
+        if (currentWeight >= safeBudget) {
           flush();
         }
       }
       continue;
     }
 
-    if (current.length > 0 && currentWeight + w > budget) {
+    if (current.length > 0 && currentWeight + w > safeBudget) {
       flush();
     }
     current.push(block);
@@ -194,7 +239,7 @@ export function isDividerBlock(content: string): boolean {
 }
 
 export function hasSlideTag(block: LogseqBlockNode): boolean {
-  if (SLIDE_TAG_RE.test(block.content)) return true;
+  if (someLineOutsideFences(block.content || '', (line) => SLIDE_TAG_RE.test(line))) return true;
   if (block.properties && (block.properties.slide === true || block.properties.slide === 'true')) {
     return true;
   }
@@ -202,29 +247,43 @@ export function hasSlideTag(block: LogseqBlockNode): boolean {
 }
 
 function cleanSlideTag(text: string): string {
-  return text.replace(/(?:^|\s)#slide\b/gi, '').replace(/\[\[slide\]\]/gi, '').trim();
+  return mapOutsideFences(text, (line) =>
+    line.replace(/(?:^|\s)#slide\b/gi, '').replace(/\[\[slide\]\]/gi, '')
+  ).trim();
 }
 
-function isNoteText(clean: string): boolean {
+export function isNoteText(clean: string): boolean {
   return /^notes?:\s*/i.test(clean) || /(?:^|\s)#notes?\b/i.test(clean);
 }
 
-function extractNoteText(clean: string): string {
+export function extractNoteText(clean: string): string {
   return clean.replace(/^notes?:\s*/i, '').replace(/#notes?\b/gi, '').trim();
 }
 
-function toSlideBlockItem(block: LogseqBlockNode, notesOut: string[]): SlideBlockItem | null {
-  const { clean, properties } = stripBlockProperties(block.content);
-  if (typeof block.properties?.['slide-notes'] === 'string') {
-    notesOut.push(block.properties['slide-notes']);
-  } else if (properties['slide-notes']) {
-    notesOut.push(properties['slide-notes']);
+function collectNoteChildren(children: LogseqBlockNode[] | undefined, notesOut: string[]): void {
+  if (!children?.length) return;
+  for (const child of children) {
+    const { clean, properties } = stripBlockProperties(child.content || '');
+    const propNote = getSlideNotesProp(properties, child.properties);
+    if (propNote) notesOut.push(propNote);
+    const text = extractNoteText(cleanSlideTag(clean));
+    if (text) notesOut.push(text);
+    collectNoteChildren(child.children, notesOut);
+  }
+}
+
+export function toSlideBlockItem(block: LogseqBlockNode, notesOut: string[]): SlideBlockItem | null {
+  const { clean, properties } = stripBlockProperties(block.content || '');
+  const propNote = getSlideNotesProp(properties, block.properties);
+  if (propNote) {
+    notesOut.push(propNote);
   }
 
   const cleanedText = cleanSlideTag(clean);
   if (isNoteText(cleanedText)) {
     const note = extractNoteText(cleanedText);
     if (note) notesOut.push(note);
+    collectNoteChildren(block.children, notesOut);
     return null;
   }
 
@@ -251,7 +310,7 @@ function processBlockList(
   blocks: LogseqBlockNode[],
   slides: SlideNode[],
   pageName?: string
-): void {
+): boolean {
   let currentSlide: SlideNode | null = slides.length > 0 ? slides[slides.length - 1] : null;
   let forceNewSlide = false;
 
@@ -270,12 +329,12 @@ function processBlockList(
   };
 
   for (const block of blocks) {
-    if (isDividerBlock(block.content)) {
+    if (isDividerBlock(block.content || '')) {
       forceNewSlide = true;
       continue;
     }
 
-    const { clean, properties } = stripBlockProperties(block.content);
+    const { clean, properties } = stripBlockProperties(block.content || '');
     const cleanedText = cleanSlideTag(clean);
 
     // Skip empty property-only page header blocks
@@ -298,10 +357,9 @@ function processBlockList(
       if (isNoAutoSplit(properties, block.properties)) slide.noAutoSplit = true;
       const notes: string[] = [];
 
-      if (typeof block.properties?.['slide-notes'] === 'string') {
-        notes.push(block.properties['slide-notes']);
-      } else if (properties['slide-notes']) {
-        notes.push(properties['slide-notes']);
+      const propNote = getSlideNotesProp(properties, block.properties);
+      if (propNote) {
+        notes.push(propNote);
       }
 
       if (restLines) {
@@ -316,12 +374,12 @@ function processBlockList(
       const children = block.children ?? [];
       for (let i = 0; i < children.length; i++) {
         const child = children[i];
-        const childClean = stripBlockProperties(child.content).clean;
+        const childClean = stripBlockProperties(child.content || '').clean;
         const childFirst = childClean.split('\n')[0]?.trim() ?? '';
-        if (isDividerBlock(child.content) || H1_RE.test(childFirst) || hasSlideTag(child)) {
+        if (isDividerBlock(child.content || '') || H1_RE.test(childFirst) || hasSlideTag(child)) {
           appendNotes(slide, notes);
-          processBlockList(children.slice(i), slides, pageName);
-          currentSlide = slides[slides.length - 1];
+          forceNewSlide = processBlockList(children.slice(i), slides, pageName);
+          currentSlide = slides[slides.length - 1] ?? null;
           notes.length = 0;
           break;
         }
@@ -334,6 +392,15 @@ function processBlockList(
     }
 
     // Case 2: Regular block (including `## Subtitle`, paragraphs, tables, images, etc.)
+    const notes: string[] = [];
+    const item = toSlideBlockItem(block, notes);
+    if (!item && notes.length === 0) {
+      continue;
+    }
+    if (!item && currentSlide && !forceNewSlide) {
+      appendNotes(currentSlide, notes);
+      continue;
+    }
     if (!currentSlide || forceNewSlide) {
       startSlide(pageName || `Slide ${slides.length + 1}`, block.uuid);
     }
@@ -344,9 +411,6 @@ function processBlockList(
     if (isNoAutoSplit(properties, block.properties) && currentSlide) {
       currentSlide.noAutoSplit = true;
     }
-
-    const notes: string[] = [];
-    const item = toSlideBlockItem(block, notes);
     if (item && currentSlide) {
       currentSlide.bodyBlocks.push(item);
     }
@@ -354,6 +418,8 @@ function processBlockList(
       appendNotes(currentSlide, notes);
     }
   }
+
+  return forceNewSlide;
 }
 
 export function parseBlocksToSlides(
@@ -438,12 +504,13 @@ export function buildDeckGraphBlocks(deck: PresentationDeck): GraphBlockSpec[] {
       }
     }
 
-    const slideLines = [`# ${slide.title || 'Untitled Slide'}`];
+    const safeTitle = (slide.title || 'Untitled Slide').replace(/\r?\n+/g, ' ').trim() || 'Untitled Slide';
+    const slideLines = [`# ${safeTitle}`];
     if (slide.layout && slide.layout !== 'default') {
       slideLines.push(`slide-layout:: ${slide.layout}`);
     }
     if (slide.notes?.trim()) {
-      slideLines.push(`slide-notes:: ${slide.notes.trim().replace(/\n+/g, ' ')}`);
+      slideLines.push(`slide-notes:: ${slide.notes.trim().replace(/\r?\n+/g, ' ')}`);
     }
     if (slidePages.length > 0) {
       slideLines.push(`source:: ${slidePages.map((p) => `[[${p}]]`).join(', ')}`);
@@ -468,6 +535,24 @@ const VALID_THEMES_SET = new Set<ThemeId>([
   'warm-paper',
 ]);
 
+function flattenNestedCustomChildren(children: LogseqBlockNode[] | undefined, depth = 0): string[] {
+  if (!children?.length) return [];
+  const lines: string[] = [];
+  const indent = '  '.repeat(depth);
+  for (const child of children) {
+    const { clean } = stripBlockProperties(child.content || '');
+    if (clean) {
+      const [first, ...rest] = clean.split('\n');
+      lines.push(`${indent}- ${first}`);
+      for (const line of rest) {
+        lines.push(`${indent}  ${line}`);
+      }
+    }
+    lines.push(...flattenNestedCustomChildren(child.children, depth + 1));
+  }
+  return lines;
+}
+
 export function parseGraphPageToDeck(
   pageName: string,
   blocks: LogseqBlockNode[]
@@ -481,15 +566,18 @@ export function parseGraphPageToDeck(
   for (const blk of blocks) {
     const { clean, properties } = stripBlockProperties(blk.content || '');
 
-    if (properties['presentation-theme'] && VALID_THEMES_SET.has(properties['presentation-theme'] as ThemeId)) {
-      theme = properties['presentation-theme'] as ThemeId;
+    const rawTheme =
+      properties['presentation-theme'] ||
+      String(getRawProp(blk.properties, 'presentation-theme', 'presentationTheme') ?? '').trim();
+    if (rawTheme && VALID_THEMES_SET.has(rawTheme as ThemeId)) {
+      theme = rawTheme as ThemeId;
     }
-    if (
-      properties['presentation-ratio'] === '16:9' ||
-      properties['presentation-ratio'] === '4:3' ||
-      properties['presentation-ratio'] === 'fluid'
-    ) {
-      aspectRatio = properties['presentation-ratio'];
+
+    const rawRatio =
+      properties['presentation-ratio'] ||
+      String(getRawProp(blk.properties, 'presentation-ratio', 'presentationRatio') ?? '').trim();
+    if (rawRatio === '16:9' || rawRatio === '4:3' || rawRatio === 'fluid') {
+      aspectRatio = rawRatio;
     }
 
     // Header property-only block
@@ -497,16 +585,27 @@ export function parseGraphPageToDeck(
       continue;
     }
 
-    const title = clean.replace(/^#\s+/, '').trim() || `Slide ${slides.length + 1}`;
+    const cleanLines = clean.split('\n');
+    const title = cleanLines[0]?.replace(/^#\s+/, '').trim() || `Slide ${slides.length + 1}`;
+    const extraSlideLines = cleanLines.slice(1).join('\n').trim();
     const layout = parseLayout(properties, blk.properties);
-    const notes = properties['slide-notes'];
+    const notes = getSlideNotesProp(properties, blk.properties);
     const sourceMatch = properties.source?.match(/\[\[([^\]]+)\]\]/);
     const defaultSourcePage = sourceMatch?.[1];
     const parts: DeckContentPart[] = [];
 
+    if (extraSlideLines) {
+      parts.push({
+        id: nextId(),
+        kind: 'custom',
+        label: extraSlideLines.split('\n')[0].slice(0, 60),
+        customMarkdown: extraSlideLines,
+      });
+    }
+
     for (const child of blk.children ?? []) {
       const childClean = stripBlockProperties(child.content || '').clean;
-      if (!childClean) continue;
+      if (!childClean && (!child.children || child.children.length === 0)) continue;
       const embedPage = childClean.match(/^\{\{embed\s+\[\[([^\]]+)\]\]\}\}$/i);
       if (embedPage) {
         parts.push({
@@ -528,11 +627,14 @@ export function parseGraphPageToDeck(
         });
         continue;
       }
+      const nestedLines = flattenNestedCustomChildren(child.children, 0);
+      const fullMarkdown = [childClean, ...nestedLines].filter(Boolean).join('\n');
+      if (!fullMarkdown) continue;
       parts.push({
         id: nextId(),
         kind: 'custom',
-        label: childClean.split('\n')[0].slice(0, 60),
-        customMarkdown: childClean,
+        label: fullMarkdown.split('\n')[0].slice(0, 60),
+        customMarkdown: fullMarkdown,
       });
     }
 
@@ -553,23 +655,48 @@ export function parseGraphPageToDeck(
   };
 }
 
+function encodeFilePathSegments(pathStr: string): string {
+  return pathStr
+    .split('/')
+    .map((seg, idx) => {
+      // Preserve Windows drive letter segment like "C:"
+      if (idx === 0 && /^[a-zA-Z]:$/.test(seg)) return seg;
+      if (idx === 1 && seg === '' && pathStr.startsWith('/')) return seg;
+      try {
+        // Avoid double-encoding already percent-encoded sequences
+        return encodeURIComponent(decodeURIComponent(seg));
+      } catch {
+        return encodeURIComponent(seg);
+      }
+    })
+    .join('/');
+}
+
+function toFileUrl(graphPath: string, relativeAssetPath: string): string {
+  const normalizedGraph = graphPath.replace(/\\/g, '/').replace(/\/+$/, '');
+  const normalizedAsset = relativeAssetPath.replace(/\\/g, '/').replace(/^\/+/, '');
+  const fullPath = `${normalizedGraph}/${normalizedAsset}`;
+  const encoded = encodeFilePathSegments(fullPath);
+  return encoded.startsWith('/') ? `file://${encoded}` : `file:///${encoded}`;
+}
+
 export function resolveAssetPath(url: string, graphPath?: string): string {
   const trimmed = url.trim();
   if (!graphPath) return trimmed;
   if (/^(?:https?:|data:|blob:|file:)/i.test(trimmed)) return trimmed;
 
-  const normalizedGraph = graphPath.replace(/\/+$/, '');
-  if (trimmed.startsWith('../assets/')) {
-    return `file://${normalizedGraph}/assets/${trimmed.slice('../assets/'.length)}`;
+  const normalizedUrl = trimmed.replace(/\\/g, '/');
+  if (normalizedUrl.startsWith('../assets/')) {
+    return toFileUrl(graphPath, `assets/${normalizedUrl.slice('../assets/'.length)}`);
   }
-  if (trimmed.startsWith('./assets/')) {
-    return `file://${normalizedGraph}/assets/${trimmed.slice('./assets/'.length)}`;
+  if (normalizedUrl.startsWith('./assets/')) {
+    return toFileUrl(graphPath, `assets/${normalizedUrl.slice('./assets/'.length)}`);
   }
-  if (trimmed.startsWith('assets/')) {
-    return `file://${normalizedGraph}/${trimmed}`;
+  if (normalizedUrl.startsWith('assets/')) {
+    return toFileUrl(graphPath, normalizedUrl);
   }
-  if (trimmed.startsWith('/assets/')) {
-    return `file://${normalizedGraph}${trimmed}`;
+  if (normalizedUrl.startsWith('/assets/')) {
+    return toFileUrl(graphPath, normalizedUrl.slice(1));
   }
   return trimmed;
 }

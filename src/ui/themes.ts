@@ -74,9 +74,10 @@ export function readLogseqHostThemeVars(): Record<string, string> {
     const hostDoc = window.parent?.document;
     if (!hostDoc) return vars;
     const style = window.parent.getComputedStyle(hostDoc.documentElement);
+    const bodyStyle = hostDoc.body ? window.parent.getComputedStyle(hostDoc.body) : null;
     const pick = (names: string[]): string => {
       for (const n of names) {
-        const v = style.getPropertyValue(n).trim();
+        const v = style.getPropertyValue(n).trim() || bodyStyle?.getPropertyValue(n).trim() || '';
         if (v) return v;
       }
       return '';

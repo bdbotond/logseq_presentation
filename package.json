@@ -9,6 +9,9 @@
     "url": "https://github.com/bdbotond/logseq_presentation"
   },
   "main": "dist/index.html",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",

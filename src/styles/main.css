@@ -24,8 +24,7 @@ body {
   --lsp-code-bg: #f1f5f9;
 }
 
-.lsp-theme-dark,
-.lsp-theme-logseq {
+.lsp-theme-dark {
   --lsp-bg: #0b1120;
   --lsp-surface: #111827;
   --lsp-panel: #161f33;
@@ -231,6 +230,7 @@ body {
   font-size: 1.8cqw;
   line-height: 1.6;
   color: var(--lsp-text);
+  overflow-wrap: break-word;
 }
 
 .lsp-slide-footer {
@@ -473,6 +473,11 @@ body {
   border-radius: 8px;
 }
 
+.lsp-mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+
 /* Layouts */
 .lsp-layout-cover {
   display: flex;
@@ -688,7 +693,9 @@ body {
 .lsp-presentation-mode.lsp-chrome-visible .lsp-player-topbar,
 .lsp-presentation-mode.lsp-chrome-visible .lsp-player-footer,
 .lsp-presentation-mode .lsp-player-topbar:hover,
-.lsp-presentation-mode .lsp-player-footer:hover {
+.lsp-presentation-mode .lsp-player-footer:hover,
+.lsp-presentation-mode .lsp-player-topbar:focus-within,
+.lsp-presentation-mode .lsp-player-footer:focus-within {
   opacity: 0.96;
   pointer-events: auto;
 }

@@ -16,44 +16,91 @@ export function makeId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function normalizeDeck(raw: any): PresentationDeck {
-  const slides: DeckSlideEntry[] = Array.isArray(raw.slides)
-    ? raw.slides.map((s: any) => {
-        // Migrate legacy { id, pageName } slide refs
-        if (s && !Array.isArray(s.parts) && typeof s.pageName === 'string') {
+function normalizePart(raw: any, regenerateIds: boolean): DeckContentPart | null {
+  if (!raw || typeof raw !== 'object') return null;
+  if (raw.kind !== 'page' && raw.kind !== 'block' && raw.kind !== 'custom') return null;
+
+  const id = !regenerateIds && typeof raw.id === 'string' && raw.id ? raw.id : makeId();
+  if (raw.kind === 'page') {
+    const pageName = typeof raw.pageName === 'string' ? raw.pageName.trim() : '';
+    if (!pageName) return null;
+    return {
+      id,
+      kind: 'page',
+      pageName,
+      label: typeof raw.label === 'string' && raw.label ? raw.label : pageName,
+    };
+  }
+  if (raw.kind === 'block') {
+    const blockUuid = typeof raw.blockUuid === 'string' ? raw.blockUuid.trim() : '';
+    if (!blockUuid) return null;
+    return {
+      id,
+      kind: 'block',
+      pageName: typeof raw.pageName === 'string' ? raw.pageName : undefined,
+      blockUuid,
+      label:
+        typeof raw.label === 'string' && raw.label ? raw.label : `Block ${blockUuid.slice(0, 8)}`,
+    };
+  }
+  const customMarkdown = typeof raw.customMarkdown === 'string' ? raw.customMarkdown : '';
+  return {
+    id,
+    kind: 'custom',
+    label:
+      typeof raw.label === 'string' && raw.label
+        ? raw.label
+        : customMarkdown.trim().split('\n')[0]?.slice(0, 60) || 'Custom block',
+    customMarkdown,
+  };
+}
+
+function normalizeDeck(raw: any, regenerateIds = false): PresentationDeck {
+  const safeRaw = raw && typeof raw === 'object' ? raw : {};
+  const slides: DeckSlideEntry[] = Array.isArray(safeRaw.slides)
+    ? safeRaw.slides
+        .filter((s: any) => s && typeof s === 'object')
+        .map((s: any) => {
+          // Migrate legacy { id, pageName } slide refs
+          if (!Array.isArray(s.parts) && typeof s.pageName === 'string') {
+            return {
+              id: !regenerateIds && typeof s.id === 'string' && s.id ? s.id : makeId(),
+              title: s.titleOverride || s.pageName,
+              parts: [
+                {
+                  id: makeId(),
+                  kind: 'page' as const,
+                  pageName: s.pageName,
+                  label: s.pageName,
+                },
+              ],
+            };
+          }
+          const parts = Array.isArray(s.parts)
+            ? s.parts
+                .map((p: any) => normalizePart(p, regenerateIds))
+                .filter((p: DeckContentPart | null): p is DeckContentPart => p !== null)
+            : [];
           return {
-            id: s.id || makeId(),
-            title: s.titleOverride || s.pageName,
-            parts: [
-              {
-                id: makeId(),
-                kind: 'page',
-                pageName: s.pageName,
-                label: s.pageName,
-              },
-            ],
+            id: !regenerateIds && typeof s.id === 'string' && s.id ? s.id : makeId(),
+            title: typeof s.title === 'string' && s.title ? s.title : 'Untitled Slide',
+            notes: typeof s.notes === 'string' ? s.notes : undefined,
+            layout:
+              s.layout === 'cover' || s.layout === 'two-column' || s.layout === 'default'
+                ? s.layout
+                : undefined,
+            parts,
           };
-        }
-        return {
-          id: s?.id || makeId(),
-          title: s?.title || 'Untitled Slide',
-          notes: s?.notes,
-          layout:
-            s?.layout === 'cover' || s?.layout === 'two-column' || s?.layout === 'default'
-              ? s.layout
-              : undefined,
-          parts: Array.isArray(s?.parts) ? s.parts : [],
-        };
-      })
+        })
     : [];
 
   return {
-    id: raw.id || makeId(),
-    title: raw.title || 'Untitled Deck',
-    theme: isValidTheme(raw.theme) ? raw.theme : 'logseq',
-    aspectRatio: isValidAspectRatio(raw.aspectRatio) ? raw.aspectRatio : '16:9',
+    id: !regenerateIds && typeof safeRaw.id === 'string' && safeRaw.id ? safeRaw.id : makeId(),
+    title: typeof safeRaw.title === 'string' && safeRaw.title ? safeRaw.title : 'Untitled Deck',
+    theme: isValidTheme(safeRaw.theme) ? safeRaw.theme : 'logseq',
+    aspectRatio: isValidAspectRatio(safeRaw.aspectRatio) ? safeRaw.aspectRatio : '16:9',
     slides,
-    updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : Date.now(),
+    updatedAt: typeof safeRaw.updatedAt === 'number' ? safeRaw.updatedAt : Date.now(),
   };
 }
 
@@ -61,6 +108,8 @@ export class DeckStore {
   private static instance: DeckStore;
   private decks: PresentationDeck[] = [];
   private loaded = false;
+  private loadPromise: Promise<PresentationDeck[]> | null = null;
+  private persistQueue: Promise<void> = Promise.resolve();
 
   static getInstance(): DeckStore {
     if (!DeckStore.instance) {
@@ -71,49 +120,76 @@ export class DeckStore {
 
   async load(): Promise<PresentationDeck[]> {
     if (this.loaded) return this.decks;
-    try {
-      const fs = (logseq as any).FileStorage;
-      if (fs && typeof fs.getItem === 'function') {
-        const raw = await fs.getItem(STORAGE_KEY);
+    if (this.loadPromise) return this.loadPromise;
+
+    this.loadPromise = (async () => {
+      try {
+        const fs = (logseq as any)?.FileStorage;
+        if (fs && typeof fs.getItem === 'function') {
+          const raw = await fs.getItem(STORAGE_KEY);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) {
+              this.decks = parsed
+                .filter((d: unknown) => Boolean(d && typeof d === 'object'))
+                .map((d) => normalizeDeck(d));
+              this.loaded = true;
+              return this.decks;
+            }
+          }
+        }
+      } catch {
+        // Fallback to localStorage
+      }
+
+      try {
+        const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(FALLBACK_KEY) : null;
         if (raw) {
           const parsed = JSON.parse(raw);
-          this.decks = Array.isArray(parsed) ? parsed.map(normalizeDeck) : [];
-          this.loaded = true;
-          return this.decks;
+          if (Array.isArray(parsed)) {
+            this.decks = parsed
+              .filter((d: unknown) => Boolean(d && typeof d === 'object'))
+              .map((d) => normalizeDeck(d));
+          }
         }
+      } catch {
+        this.decks = [];
       }
-    } catch {
-      // Fallback to localStorage
-    }
+      this.loaded = true;
+      return this.decks;
+    })();
 
     try {
-      const raw = localStorage.getItem(FALLBACK_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        this.decks = Array.isArray(parsed) ? parsed.map(normalizeDeck) : [];
-      }
-    } catch {
-      this.decks = [];
+      return await this.loadPromise;
+    } finally {
+      this.loadPromise = null;
     }
-    this.loaded = true;
-    return this.decks;
   }
 
-  private async persist(): Promise<void> {
-    const json = JSON.stringify(this.decks, null, 2);
-    try {
-      const fs = (logseq as any).FileStorage;
-      if (fs && typeof fs.setItem === 'function') {
-        await fs.setItem(STORAGE_KEY, json);
+  private persist(): Promise<void> {
+    const run = async () => {
+      // Serialize the latest state at execution time so rapid writes never overwrite newer state
+      const json = JSON.stringify(this.decks, null, 2);
+      try {
+        const fs = (logseq as any)?.FileStorage;
+        if (fs && typeof fs.setItem === 'function') {
+          await fs.setItem(STORAGE_KEY, json);
+        }
+      } catch {
+        // Ignore FileStorage error
       }
-    } catch {
-      // Ignore FileStorage error
-    }
-    try {
-      localStorage.setItem(FALLBACK_KEY, json);
-    } catch {
-      // Ignore localStorage error
-    }
+      try {
+        if (typeof localStorage !== 'undefined') {
+          localStorage.setItem(FALLBACK_KEY, json);
+        }
+      } catch {
+        // Ignore localStorage error
+      }
+    };
+
+    const next = this.persistQueue.then(run, run);
+    this.persistQueue = next;
+    return next;
   }
 
   getDecks(): PresentationDeck[] {
@@ -146,6 +222,7 @@ export class DeckStore {
   }
 
   async renameDeck(id: string, title: string): Promise<void> {
+    await this.load();
     const deck = this.getDeck(id);
     if (!deck) return;
     deck.title = title.trim() || deck.title;
@@ -154,6 +231,7 @@ export class DeckStore {
   }
 
   async updateTheme(id: string, theme: ThemeId): Promise<void> {
+    await this.load();
     const deck = this.getDeck(id);
     if (!deck) return;
     deck.theme = theme;
@@ -162,6 +240,7 @@ export class DeckStore {
   }
 
   async updateAspectRatio(id: string, aspectRatio: AspectRatio): Promise<void> {
+    await this.load();
     const deck = this.getDeck(id);
     if (!deck) return;
     deck.aspectRatio = aspectRatio;
@@ -176,6 +255,7 @@ export class DeckStore {
     notes?: string,
     layout?: SlideLayout
   ): Promise<DeckSlideEntry | null> {
+    await this.load();
     const deck = this.getDeck(deckId);
     if (!deck) return null;
     const entry: DeckSlideEntry = {
@@ -196,17 +276,19 @@ export class DeckStore {
     slideId: string,
     patch: Partial<Pick<DeckSlideEntry, 'title' | 'notes' | 'layout'>>
   ): Promise<void> {
+    await this.load();
     const deck = this.getDeck(deckId);
     const slide = deck?.slides.find((s) => s.id === slideId);
     if (!deck || !slide) return;
     if (patch.title !== undefined) slide.title = patch.title;
-    if (patch.notes !== undefined) slide.notes = patch.notes;
+    if ('notes' in patch) slide.notes = patch.notes;
     if ('layout' in patch) slide.layout = patch.layout;
     deck.updatedAt = Date.now();
     await this.persist();
   }
 
   async removeSlide(deckId: string, slideId: string): Promise<void> {
+    await this.load();
     const deck = this.getDeck(deckId);
     if (!deck) return;
     deck.slides = deck.slides.filter((s) => s.id !== slideId);
@@ -215,9 +297,11 @@ export class DeckStore {
   }
 
   async moveSlide(deckId: string, fromIndex: number, toIndex: number): Promise<void> {
+    await this.load();
     const deck = this.getDeck(deckId);
     if (!deck) return;
     if (
+      fromIndex === toIndex ||
       fromIndex < 0 ||
       toIndex < 0 ||
       fromIndex >= deck.slides.length ||
@@ -236,6 +320,7 @@ export class DeckStore {
     slideId: string,
     parts: Omit<DeckContentPart, 'id'>[]
   ): Promise<void> {
+    await this.load();
     const deck = this.getDeck(deckId);
     const slide = deck?.slides.find((s) => s.id === slideId);
     if (!deck || !slide) return;
@@ -247,6 +332,7 @@ export class DeckStore {
   }
 
   async removePartFromSlide(deckId: string, slideId: string, partId: string): Promise<void> {
+    await this.load();
     const deck = this.getDeck(deckId);
     const slide = deck?.slides.find((s) => s.id === slideId);
     if (!deck || !slide) return;
@@ -261,6 +347,7 @@ export class DeckStore {
     partId: string,
     customMarkdown: string
   ): Promise<void> {
+    await this.load();
     const deck = this.getDeck(deckId);
     const slide = deck?.slides.find((s) => s.id === slideId);
     const part = slide?.parts.find((p) => p.id === partId);
@@ -274,11 +361,17 @@ export class DeckStore {
   async importDeckJson(rawJson: string): Promise<PresentationDeck> {
     await this.load();
     const parsed = JSON.parse(rawJson);
-    const deck = normalizeDeck({
-      ...parsed,
-      id: makeId(),
-      updatedAt: Date.now(),
-    });
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('Invalid deck JSON: expected a deck object');
+    }
+    const deck = normalizeDeck(
+      {
+        ...parsed,
+        id: makeId(),
+        updatedAt: Date.now(),
+      },
+      true
+    );
     this.decks.unshift(deck);
     await this.persist();
     return deck;
@@ -303,11 +396,14 @@ export class DeckStore {
       await this.persist();
       return existing;
     }
-    const created = normalizeDeck({
-      ...data,
-      id: makeId(),
-      updatedAt: Date.now(),
-    });
+    const created = normalizeDeck(
+      {
+        ...data,
+        id: makeId(),
+        updatedAt: Date.now(),
+      },
+      true
+    );
     this.decks.unshift(created);
     await this.persist();
     return created;
@@ -319,10 +415,12 @@ export class DeckStore {
     fromIndex: number,
     toIndex: number
   ): Promise<void> {
+    await this.load();
     const deck = this.getDeck(deckId);
     const slide = deck?.slides.find((s) => s.id === slideId);
     if (!deck || !slide) return;
     if (
+      fromIndex === toIndex ||
       fromIndex < 0 ||
       toIndex < 0 ||
       fromIndex >= slide.parts.length ||
