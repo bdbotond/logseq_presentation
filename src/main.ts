@@ -57,8 +57,9 @@ async function presentCurrentPage(): Promise<void> {
       graphPath,
       presentationMode: true,
       onClose: studio?.isStudioOpen()
-        ? () => {
-            if (studio.isStudioOpen()) studio.restoreBounds();
+        ? (reason) => {
+            if (reason === 'navigate') studio.close();
+            else if (studio.isStudioOpen()) studio.restoreBounds();
             else logseq.hideMainUI();
           }
         : undefined,

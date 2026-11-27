@@ -132,7 +132,7 @@ describe('parseBlocksToSlides (H1 splits, H2 subtitles)', () => {
     const slides = parseBlocksToSlides(blocks, 'LongPage');
     expect(slides.length).toBeGreaterThanOrEqual(2);
     expect(slides[0].title).toBe('Long Topic');
-    expect(slides[1].title).toBe(`Long Topic (2/${slides.length})`);
+    expect(slides[1].title).toBe('Long Topic');
     const totalBullets = slides.reduce((sum, s) => sum + s.bodyBlocks.length, 0);
     expect(totalBullets).toBe(16);
   });
@@ -475,11 +475,28 @@ describe('parser edge cases and regressions', () => {
           },
         ],
       },
+      { uuid: 'sep', content: '---', children: [] },
     ]);
+    expect(restored.slides).toHaveLength(1);
     expect(restored.slides[0].title).toBe('Slide One');
     expect(restored.slides[0].parts).toHaveLength(2);
     expect(restored.slides[0].parts[0].customMarkdown).toBe('Extra intro line');
     expect(restored.slides[0].parts[1].customMarkdown).toBe('Parent point\n- Nested child');
+  });
+
+  it('starts a new slide on inline slide:: true property in raw block text', () => {
+    const blocks: LogseqBlockNode[] = [
+      { uuid: '1', content: '# First', children: [{ uuid: '1a', content: 'One', children: [] }] },
+      {
+        uuid: '2',
+        content: 'slide:: true\nCustom Slide',
+        children: [{ uuid: '2a', content: 'Two', children: [] }],
+      },
+    ];
+    const slides = parseBlocksToSlides(blocks, 'PropSlidePage');
+    expect(slides).toHaveLength(2);
+    expect(slides[1].title).toBe('Custom Slide');
+    expect(slides[1].bodyBlocks[0].content).toBe('Two');
   });
 });
 
@@ -620,6 +637,31 @@ describe('LogseqService embeds, graph save/load, and navigation', () => {
     const svc = new LogseqService();
     await svc.openBlock('blk-1');
     expect(scrollToBlockInPage).toHaveBeenCalledWith('Target Page', 'blk-1');
+  });
+
+  it('resolveDeckSlideEntry preserves extra lines on matched H1 blocks and stops at nested dividers', async () => {
+    (globalThis as any).logseq = {
+      Editor: {
+        getBlock: vi.fn(async () => ({
+          uuid: 'h1-blk',
+          content: '# Intro\nLead paragraph',
+          children: [
+            { uuid: 'c1', content: 'First bullet', children: [] },
+            { uuid: 'sep', content: '---', children: [] },
+            { uuid: 'c2', content: 'Next slide bullet', children: [] },
+          ],
+        })),
+      },
+    };
+
+    const svc = new LogseqService();
+    const slides = await svc.resolveDeckSlideEntry({
+      id: 'entry-1',
+      title: 'Intro',
+      parts: [{ id: 'p1', kind: 'block', blockUuid: 'h1-blk', label: 'Intro' }],
+    });
+    expect(slides).toHaveLength(1);
+    expect(slides[0].bodyBlocks.map((b) => b.content)).toEqual(['Lead paragraph', 'First bullet']);
   });
 });
 

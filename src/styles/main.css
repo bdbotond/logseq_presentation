@@ -651,6 +651,11 @@ body {
   font-size: 13px;
 }
 
+.lsp-nav-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .lsp-slide-counter {
   font-size: 13px;
   color: var(--lsp-muted);

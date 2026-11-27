@@ -1,7 +1,7 @@
 import '@logseq/libs';
 import { LogseqService } from '../services/logseqService';
 import type { AspectRatio, SlideNode, ThemeId } from '../types';
-import { hydrateMermaidDiagrams, renderSlideHtml } from './renderer';
+import { escapeHtml, hydrateMermaidDiagrams, renderSlideHtml } from './renderer';
 import { exportDeckToHtml, printDeckToPdf } from './exporter';
 import { ICONS } from './icons';
 import {
@@ -31,7 +31,7 @@ export class PresentationPlayer {
   private chromeHideTimer: number | null = null;
   private startedAt = 0;
   private timerHandle: number | null = null;
-  private onCloseCallback?: () => void;
+  private onCloseCallback?: (reason?: 'close' | 'navigate') => void;
   private keyHandler: (e: KeyboardEvent) => void;
   private mouseMoveHandler: () => void;
   private fullscreenHandler: () => void;
@@ -81,7 +81,7 @@ export class PresentationPlayer {
     graphPath?: string;
     startIndex?: number;
     presentationMode?: boolean;
-    onClose?: () => void;
+    onClose?: (reason?: 'close' | 'navigate') => void;
   }): Promise<void> {
     if (this.timerHandle !== null) {
       window.clearInterval(this.timerHandle);
@@ -90,6 +90,9 @@ export class PresentationPlayer {
     if (this.chromeHideTimer !== null) {
       window.clearTimeout(this.chromeHideTimer);
       this.chromeHideTimer = null;
+    }
+    if (this.overlay && !options.presentationMode) {
+      this.exitRealFullscreen();
     }
 
     this.title = options.title;
@@ -176,7 +179,7 @@ export class PresentationPlayer {
     });
   }
 
-  close(): void {
+  close(reason: 'close' | 'navigate' = 'close'): void {
     if (this.timerHandle !== null) {
       window.clearInterval(this.timerHandle);
       this.timerHandle = null;
@@ -192,7 +195,7 @@ export class PresentationPlayer {
     this.overlay?.remove();
     this.overlay = null;
     if (this.onCloseCallback) {
-      this.onCloseCallback();
+      this.onCloseCallback(reason);
     } else {
       logseq.hideMainUI();
     }
@@ -307,8 +310,9 @@ export class PresentationPlayer {
       const targetEl = e.target as HTMLElement;
       const pageRef = targetEl.closest<HTMLElement>('[data-page-ref]');
       if (pageRef?.dataset.pageRef) {
-        this.close();
-        await LogseqService.getInstance().openPage(pageRef.dataset.pageRef);
+        const targetPage = pageRef.dataset.pageRef;
+        this.close('navigate');
+        await LogseqService.getInstance().openPage(targetPage);
         return;
       }
 
@@ -358,10 +362,10 @@ export class PresentationPlayer {
       } else if (action === 'source') {
         const slide = this.slides[this.currentIndex];
         if (slide?.sourceUuid) {
-          this.close();
-          await LogseqService.getInstance().openBlock(slide.sourceUuid);
+          this.close('navigate');
+          await LogseqService.getInstance().openBlock(slide.sourceUuid, slide.sourcePage);
         } else if (slide?.sourcePage) {
-          this.close();
+          this.close('navigate');
           await LogseqService.getInstance().openPage(slide.sourcePage);
         }
       } else if (action === 'fullscreen') this.toggleFullscreen();
@@ -392,7 +396,15 @@ export class PresentationPlayer {
   }
 
   private async renderCurrentSlide(): Promise<void> {
-    if (!this.overlay || this.slides.length === 0) return;
+    if (!this.overlay) return;
+    const prevBtn = this.overlay.querySelector<HTMLButtonElement>('[data-action="prev"]');
+    const nextBtn = this.overlay.querySelector<HTMLButtonElement>('[data-action="next"]');
+    if (this.slides.length === 0) {
+      if (prevBtn) prevBtn.disabled = true;
+      if (nextBtn) nextBtn.disabled = true;
+      this.overlay.querySelector<HTMLElement>('.lsp-slide-counter')!.textContent = '0 / 0';
+      return;
+    }
     const slide = this.slides[this.currentIndex];
     const frame = this.overlay.querySelector<HTMLElement>('.lsp-slide-frame')!;
     frame.innerHTML = renderSlideHtml(slide, this.graphPath, {
@@ -401,6 +413,9 @@ export class PresentationPlayer {
       slideTotal: this.slides.length,
     });
     frame.scrollTop = 0;
+
+    if (prevBtn) prevBtn.disabled = this.currentIndex === 0;
+    if (nextBtn) nextBtn.disabled = this.currentIndex >= this.slides.length - 1;
 
     const sourceBtn = this.overlay.querySelector<HTMLButtonElement>('[data-action="source"]');
     if (sourceBtn) {
@@ -443,7 +458,7 @@ export class PresentationPlayer {
               (s, i) => `
               <button class="lsp-grid-card ${i === this.currentIndex ? 'active' : ''}" data-grid-index="${i}">
                 <span class="lsp-grid-num">${i + 1}</span>
-                <span class="lsp-grid-title">${this.esc(s.title)}</span>
+                <span class="lsp-grid-title">${escapeHtml(s.title)}</span>
               </button>`
             )
             .join('')}
@@ -457,15 +472,6 @@ export class PresentationPlayer {
     this.blackout = force ?? !this.blackout;
     const el = this.overlay?.querySelector<HTMLElement>('.lsp-blackout-overlay');
     if (el) el.hidden = !this.blackout;
-  }
-
-  private esc(text: string): string {
-    return text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
   }
 
   private toggleFullscreen(): void {

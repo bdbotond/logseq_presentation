@@ -12,6 +12,15 @@ import { isValidAspectRatio, isValidTheme } from '../ui/themes';
 const STORAGE_KEY = 'decks.json';
 const FALLBACK_KEY = 'logseq-presentation:decks';
 
+function getBrowserStorage(): Storage | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.localStorage ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export function makeId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -143,7 +152,7 @@ export class DeckStore {
       }
 
       try {
-        const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(FALLBACK_KEY) : null;
+        const raw = getBrowserStorage()?.getItem(FALLBACK_KEY) ?? null;
         if (raw) {
           const parsed = JSON.parse(raw);
           if (Array.isArray(parsed)) {
@@ -179,9 +188,7 @@ export class DeckStore {
         // Ignore FileStorage error
       }
       try {
-        if (typeof localStorage !== 'undefined') {
-          localStorage.setItem(FALLBACK_KEY, json);
-        }
+        getBrowserStorage()?.setItem(FALLBACK_KEY, json);
       } catch {
         // Ignore localStorage error
       }

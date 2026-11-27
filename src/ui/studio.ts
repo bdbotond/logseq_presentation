@@ -13,7 +13,7 @@ import type {
 import { exportDeckToHtml, printDeckToPdf } from './exporter';
 import { ICONS } from './icons';
 import { PresentationPlayer } from './player';
-import { hydrateMermaidDiagrams, renderSlideHtml } from './renderer';
+import { escapeHtml, hydrateMermaidDiagrams, renderSlideHtml } from './renderer';
 import {
   applyLogseqThemeVars,
   getAspectRatioClass,
@@ -840,8 +840,8 @@ export class PresentationStudio {
         if (cur) await this.inspectPage(cur);
         else logseq.UI.showMsg('No active page in Logseq.', 'warning');
       } else if (action === 'add-whole-page' && activeDeck && this.inspectedPage) {
-        // Parse the page into its # slides and add them individually so user can edit/reorder them
-        const pageSlides = await svc.fetchPageSlides(this.inspectedPage);
+        // Parse logical # slides without auto-splitting so continuation chunks are not duplicated
+        const pageSlides = await svc.fetchPageSlides(this.inspectedPage, { autoSplit: false });
         if (pageSlides.length <= 1) {
           const created = await store.addSlide(
             activeDeck.id,
@@ -990,8 +990,10 @@ export class PresentationStudio {
       graphPath: this.graphPath,
       startIndex,
       presentationMode: true,
-      onClose: () => {
-        if (this.isOpen) {
+      onClose: (reason) => {
+        if (reason === 'navigate') {
+          this.close();
+        } else if (this.isOpen) {
           this.applyFullWindowStyle();
         } else {
           logseq.hideMainUI();
@@ -1000,12 +1002,5 @@ export class PresentationStudio {
     });
   }
 
-  private esc(text: string): string {
-    return text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
-  }
+  private esc = escapeHtml;
 }

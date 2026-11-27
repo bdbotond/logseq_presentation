@@ -15,7 +15,7 @@ Convert any Logseq page into a native fullscreen slide presentation, compose mul
   - `# H1` headings, `#slide`, or `slide:: true` start a new slide.
   - `##`–`######` headings render as clean subtitles (not bullets).
   - `---` or `***` blocks force a slide break (works on top-level and nested blocks).
-  - **Auto-Split Long Slides**: Overflowing slides automatically break into continuation slides (`Title`, `Title (2/N)`, ...). Add `slide-no-split:: true` to opt out on a specific slide.
+  - **Auto-Split Long Slides**: Overflowing slides automatically break into continuation slides. Add `slide-no-split:: true` to opt out on a specific slide.
 - **Rich Logseq Content**:
   - Markdown tables, blockquotes, highlights (`==text==`, `^^text^^`), task markers (`TODO`, `DOING`, `DONE`, etc.), tags, and clickable `[[Page]]` links.
   - Images (including local `../assets/` paths and `{:height N, :width N}` sizing) and video/YouTube embeds (`{{video url}}`, `{{youtube url}}`).
@@ -82,14 +82,15 @@ Any normal Logseq page works out of the box. Use headings and block properties t
 
 | Key / Action | Effect |
 | --- | --- |
-| `→`, `Space`, `PageDown`, click right 75% | Next slide |
-| `←`, `PageUp`, click left 25% | Previous slide |
+| `→`, `Space`, `PageDown`, click right 75% (Presentation Mode) | Next slide |
+| `←`, `PageUp`, click left 25% (Presentation Mode) | Previous slide |
 | `Home` / `End` | Jump to first / last slide |
 | `P` | Toggle Presentation Mode (native fullscreen + auto-hiding controls) |
 | `F` | Toggle fullscreen |
 | `G` | Open slide overview grid |
 | `S` | Toggle speaker notes drawer |
 | `B` | Toggle screen blackout |
+| Click `00:00` timer | Reset elapsed presentation timer |
 | `Esc` | Exit blackout / grid / close presentation |
 
 ## Installation

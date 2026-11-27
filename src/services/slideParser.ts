@@ -9,11 +9,13 @@ import type {
   SlideNode,
   ThemeId,
 } from '../types';
+import { isValidAspectRatio, isValidTheme } from '../ui/themes';
 
 const PROP_LINE_RE = /^([a-zA-Z0-9_-]+)::(?:\s+(.*)|\s*)$/;
 const SLIDE_TAG_RE = /(?:^|\s)#slide\b|\[\[slide\]\]/i;
 const DIVIDER_RE = /^(?:---+|\*\*\*+)$/;
 const H1_RE = /^#\s+(.+)$/;
+export const IMAGE_MD_RE = /^!\[([^\]]*)\]\(((?:[^()\n]|\([^()\n]*\))+)\)/;
 
 function mapOutsideFences(text: string, fn: (line: string) => string): string {
   let inFence = false;
@@ -120,7 +122,7 @@ export function estimateBlockWeight(block: SlideBlockItem, depth = 0): number {
     } else if (/^\|.+\|\s*\n\s*\|[-:| ]+\|/.test(text)) {
       const rows = text.split('\n').filter((l) => l.trim().startsWith('|')).length;
       weight += Math.min(12, rows * 1.1 + 1.5);
-    } else if (/^!\[[^\]]*\]\([^)]+\)/.test(text) || /^\{\{(?:video|youtube)\s+/i.test(text)) {
+    } else if (IMAGE_MD_RE.test(text) || /^\{\{(?:video|youtube)\s+/i.test(text)) {
       weight += 6.5;
     } else if (/^\$\$[\s\S]+\$\$$/.test(text)) {
       weight += 3.0;
@@ -224,7 +226,7 @@ export function autoSplitLongSlides(
       result.push({
         ...slide,
         id: idx === 0 ? slide.id : `${slide.id}-part-${idx + 1}`,
-        title: idx === 0 ? slide.title : `${slide.title} (${idx + 1}/${chunks.length})`,
+        title: slide.title,
         bodyBlocks: chunk,
       });
     });
@@ -238,12 +240,16 @@ export function isDividerBlock(content: string): boolean {
   return DIVIDER_RE.test(clean.trim());
 }
 
-export function hasSlideTag(block: LogseqBlockNode): boolean {
+export function hasSlideTag(
+  block: LogseqBlockNode,
+  parsedProps?: Record<string, string>
+): boolean {
   if (someLineOutsideFences(block.content || '', (line) => SLIDE_TAG_RE.test(line))) return true;
-  if (block.properties && (block.properties.slide === true || block.properties.slide === 'true')) {
+  if (block.properties && (block.properties.slide === true || String(block.properties.slide).trim().toLowerCase() === 'true')) {
     return true;
   }
-  return false;
+  const props = parsedProps ?? stripBlockProperties(block.content || '').properties;
+  return props.slide?.trim().toLowerCase() === 'true';
 }
 
 function cleanSlideTag(text: string): string {
@@ -346,9 +352,9 @@ function processBlockList(
     const firstLine = lines[0]?.trim() ?? '';
     const restLines = lines.slice(1).join('\n').trim();
     const h1Match = firstLine.match(H1_RE);
-    const taggedSlide = hasSlideTag(block);
+    const taggedSlide = hasSlideTag(block, properties);
 
-    // Case 1: H1 (`# Title`) or explicit `#slide` tag starts a new slide
+    // Case 1: H1 (`# Title`) or explicit `#slide` / `slide:: true` starts a new slide
     if (h1Match || taggedSlide) {
       const title = h1Match ? h1Match[1].trim() : firstLine.replace(/^#{1,6}\s+/, '').trim();
       const slide = startSlide(title, block.uuid);
@@ -374,9 +380,9 @@ function processBlockList(
       const children = block.children ?? [];
       for (let i = 0; i < children.length; i++) {
         const child = children[i];
-        const childClean = stripBlockProperties(child.content || '').clean;
+        const { clean: childClean, properties: childProps } = stripBlockProperties(child.content || '');
         const childFirst = childClean.split('\n')[0]?.trim() ?? '';
-        if (isDividerBlock(child.content || '') || H1_RE.test(childFirst) || hasSlideTag(child)) {
+        if (isDividerBlock(child.content || '') || H1_RE.test(childFirst) || hasSlideTag(child, childProps)) {
           appendNotes(slide, notes);
           forceNewSlide = processBlockList(children.slice(i), slides, pageName);
           currentSlide = slides[slides.length - 1] ?? null;
@@ -525,16 +531,6 @@ export function buildDeckGraphBlocks(deck: PresentationDeck): GraphBlockSpec[] {
   return blocks;
 }
 
-const VALID_THEMES_SET = new Set<ThemeId>([
-  'logseq',
-  'light',
-  'dark',
-  'minimal',
-  'midnight',
-  'academic',
-  'warm-paper',
-]);
-
 function flattenNestedCustomChildren(children: LogseqBlockNode[] | undefined, depth = 0): string[] {
   if (!children?.length) return [];
   const lines: string[] = [];
@@ -564,19 +560,20 @@ export function parseGraphPageToDeck(
   const nextId = () => `g-${++idSeq}`;
 
   for (const blk of blocks) {
+    if (isDividerBlock(blk.content || '')) continue;
     const { clean, properties } = stripBlockProperties(blk.content || '');
 
     const rawTheme =
       properties['presentation-theme'] ||
       String(getRawProp(blk.properties, 'presentation-theme', 'presentationTheme') ?? '').trim();
-    if (rawTheme && VALID_THEMES_SET.has(rawTheme as ThemeId)) {
-      theme = rawTheme as ThemeId;
+    if (isValidTheme(rawTheme)) {
+      theme = rawTheme;
     }
 
     const rawRatio =
       properties['presentation-ratio'] ||
       String(getRawProp(blk.properties, 'presentation-ratio', 'presentationRatio') ?? '').trim();
-    if (rawRatio === '16:9' || rawRatio === '4:3' || rawRatio === 'fluid') {
+    if (isValidAspectRatio(rawRatio)) {
       aspectRatio = rawRatio;
     }
 

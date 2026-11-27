@@ -8,7 +8,7 @@ let mermaidModule: any = null;
 let mermaidCounter = 0;
 let placeholderNonce = 0;
 
-function escapeHtml(text: string): string {
+export function escapeHtml(text: string): string {
   return text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -89,7 +89,7 @@ function renderMath(
     }
   });
 
-  out = out.replace(/(?<!\\)\$([^\n$]+?)\$/g, (_, tex) => {
+  out = out.replace(/(?<!\\)\$(?!\s)((?:\\.|[^\\\n$])+?(?<!\s))\$(?![0-9])/g, (_, tex) => {
     try {
       return addInline(
         katex.renderToString(tex.trim(), {
@@ -115,7 +115,7 @@ function preprocessLogseqSyntax(
 
   // Handle Logseq image attributes: ![alt](path){:height 200, :width 300}
   text = text.replace(
-    /!\[([^\]]*)\]\(([^)]+)\)\{([^}]+)\}/g,
+    /!\[([^\]]*)\]\(((?:[^()\n]|\([^()\n]*\))+)\)\{([^}\n]+)\}/g,
     (_, alt, url, attrs) => {
       const resolved = resolveAssetPath(url, graphPath);
       if (!isSafeUrl(resolved)) return escapeHtml(alt);
@@ -132,7 +132,7 @@ function preprocessLogseqSyntax(
   );
 
   // Standard markdown images ![alt](path)
-  text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) => {
+  text = text.replace(/!\[([^\]]*)\]\(((?:[^()\n]|\([^()\n]*\))+)\)/g, (_, alt, url) => {
     const resolved = resolveAssetPath(url, graphPath);
     if (!isSafeUrl(resolved)) return escapeHtml(alt);
     return addInline(`<img src="${escapeHtml(resolved)}" alt="${escapeHtml(alt)}" class="lsp-img" />`);
@@ -142,7 +142,7 @@ function preprocessLogseqSyntax(
   text = text.replace(/\{\{(?:video|youtube)\s+([^}]+)\}\}/gi, (_, url) => {
     const cleanUrl = url.trim();
     const ytMatch = cleanUrl.match(
-      /(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]+)/
+      /(?:youtube(?:-nocookie)?\.com\/(?:watch\?(?:[^#\s]*&)?v=|embed\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{6,})/
     );
     if (ytMatch) {
       return `\n\n${addBlock(
@@ -162,10 +162,11 @@ function preprocessLogseqSyntax(
     (_, status) => `${addInline(`<span class="lsp-task lsp-task-${status}">${status}</span>`)} `
   );
 
-  // Highlights ==text== or ^^text^^
-  text = text.replace(/==([^=]+)==|\^\^([^^]+)\^\^/g, (_, a, b) => {
-    return addInline(`<mark class="lsp-mark">${escapeHtml(a ?? b)}</mark>`);
-  });
+  // Highlights ==text== or ^^text^^ (require non-space boundaries so `a == b && c == d` is untouched)
+  text = text.replace(
+    /==(?=\S)((?:(?!==)[^\n])*?\S)==|\^\^(?=\S)((?:(?!\^\^)[^\n])*?\S)\^\^/g,
+    (_, a, b) => addInline(`<mark class="lsp-mark">${escapeHtml(a ?? b)}</mark>`)
+  );
 
   // Page references [[Page]]
   text = text.replace(/\[\[([^\]]+)\]\]/g, (_, page) => {
@@ -173,9 +174,9 @@ function preprocessLogseqSyntax(
     return addInline(`<span class="lsp-page-ref" data-page-ref="${safe}">${safe}</span>`);
   });
 
-  // Tags #tag (only when preceded by start/whitespace, never markdown headings or hex colors)
+  // Tags #tag (only when preceded by start/whitespace, never markdown headings, pure numbers, or hex colors)
   text = text.replace(/(^|\s)#([a-zA-Z0-9_/-]+)/g, (match, pre, tag) => {
-    if (/^(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(tag)) {
+    if (/^\d+$/.test(tag) || /^(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(tag)) {
       return match;
     }
     return `${pre}${addInline(`<span class="lsp-tag">#${escapeHtml(tag)}</span>`)}`;
@@ -217,8 +218,8 @@ export function renderMarkdownText(raw: string, graphPath?: string): string {
     return `@@LSP${nonce}_CODEBLOCK_${idx}@@`;
   });
 
-  // 3. Protect inline code spans
-  text = text.replace(/`[^`\n]+`/g, (match) => {
+  // 3. Protect inline code spans (including multi-backtick spans)
+  text = text.replace(/(`+)(?!`)(?:(?!\1)[^\n])+?(?<!`)\1(?!`)/g, (match) => {
     const idx = inlineCodes.length;
     inlineCodes.push(match);
     return `@@LSP${nonce}_INLINECODE_${idx}@@`;
@@ -269,7 +270,7 @@ function isStandaloneRichBlock(content: string): boolean {
   if (!trimmed) return false;
   if (/^```/.test(trimmed)) return true; // code or mermaid
   if (/^\|.+\|\s*\n\s*\|[-:| ]+\|/.test(trimmed)) return true; // markdown table
-  if (/^!\[[^\]]*\]\([^)]+\)(?:\{[^}]+\})?$/.test(trimmed)) return true; // standalone image
+  if (/^!\[[^\]]*\]\((?:[^()\n]|\([^()\n]*\))+\)(?:\{[^}\n]+\})?$/.test(trimmed)) return true; // standalone image
   if (/^\$\$[\s\S]+\$\$$/.test(trimmed)) return true; // display math
   if (/^\{\{(?:video|youtube)\s+[^}]+\}\}$/i.test(trimmed)) return true; // video embed
   if (/^>/.test(trimmed)) return true; // blockquote

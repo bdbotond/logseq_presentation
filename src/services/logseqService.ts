@@ -8,9 +8,12 @@ import type {
   SlideNode,
 } from '../types';
 import {
+  IMAGE_MD_RE,
   autoSplitLongSlides,
   buildDeckGraphBlocks,
   getDeckGraphPageName,
+  hasSlideTag,
+  isDividerBlock,
   parseBlocksToSlides,
   parseGraphPageToDeck,
   stripBlockProperties,
@@ -26,7 +29,7 @@ function detectBlockKind(clean: string): PageBlockOutlineItem['kind'] {
   if (/^#\s+/.test(first)) return 'h1';
   if (/^#{2,6}\s+/.test(first)) return 'h2';
   if (/^\|.+\|\s*\n\s*\|[-:| ]+\|/.test(clean)) return 'table';
-  if (/^!\[[^\]]*\]\([^)]+\)/.test(first)) return 'image';
+  if (IMAGE_MD_RE.test(first)) return 'image';
   if (/^```/.test(first)) return 'code';
   return 'block';
 }
@@ -37,7 +40,7 @@ function makePreview(clean: string, kind: PageBlockOutlineItem['kind']): string 
     return `Table: ${header.slice(0, 60)}`;
   }
   if (kind === 'image') {
-    const match = clean.match(/!\[([^\]]*)\]\(([^)]+)\)/);
+    const match = clean.match(IMAGE_MD_RE);
     return `Image: ${match?.[1] || match?.[2]?.split('/').pop() || 'image'}`;
   }
   if (kind === 'code') {
@@ -302,12 +305,23 @@ export class LogseqService {
           const [resolved] = await this.resolveEmbedsInBlocks([raw], blockVisited, 0);
           if (resolved) {
             const { clean } = stripBlockProperties(resolved.content || '');
+            const lines = clean.split('\n');
+            const firstLine = lines[0]?.trim() ?? '';
+            const restLines = lines.slice(1).join('\n').trim();
             // If the user picked an H1 block and its title already matches slide title, lift its children directly
             if (
-              /^#\s+/.test(clean) &&
-              clean.replace(/^#\s+/, '').trim().toLowerCase() === entry.title.trim().toLowerCase()
+              /^#\s+/.test(firstLine) &&
+              firstLine.replace(/^#\s+/, '').trim().toLowerCase() === entry.title.trim().toLowerCase()
             ) {
+              if (restLines) {
+                bodyBlocks.push({ uuid: resolved.uuid, content: restLines, children: [] });
+              }
               for (const c of resolved.children ?? []) {
+                const { clean: childClean, properties: childProps } = stripBlockProperties(c.content || '');
+                const childFirst = childClean.split('\n')[0]?.trim() ?? '';
+                if (isDividerBlock(c.content || '') || /^#\s+/.test(childFirst) || hasSlideTag(c, childProps)) {
+                  break;
+                }
                 const childItem = blockNodeToSlideItem(c, extractedNotes);
                 if (childItem) bodyBlocks.push(childItem);
               }

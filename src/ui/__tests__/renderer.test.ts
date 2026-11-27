@@ -41,16 +41,41 @@ describe('renderMarkdownText security and edge cases', () => {
     const html = renderMarkdownText('{{youtube https://youtu.be/dQw4w9WgXcQ}}');
     expect(html).toContain('https://www.youtube.com/embed/dQw4w9WgXcQ');
     expect(html).toContain('referrerpolicy="strict-origin-when-cross-origin"');
+
+    const shortsHtml = renderMarkdownText(
+      '{{video https://www.youtube.com/shorts/dQw4w9WgXcQ}}'
+    );
+    expect(shortsHtml).toContain('https://www.youtube.com/embed/dQw4w9WgXcQ');
+  });
+
+  it('does not treat currency amounts, equality operators, or numeric #1 as math/highlights/tags', () => {
+    const html = renderMarkdownText(
+      'Saved $10k in Q1 and $25k in Q2; check a == b && c == d; Goal #1 with #roadmap'
+    );
+    expect(html).not.toContain('katex');
+    expect(html).not.toContain('<mark');
+    expect(html).not.toContain('>#1<');
+    expect(html).toContain('<span class="lsp-tag">#roadmap</span>');
+  });
+
+  it('supports multi-backtick code spans and asset paths containing parentheses', () => {
+    const html = renderMarkdownText(
+      'Use ``code with ` backtick and $x$``\n\n![diagram](../assets/arch (1).png)',
+      '/home/user/graph'
+    );
+    expect(html).toContain('code with ` backtick and $x$');
+    expect(html).not.toContain('katex');
+    expect(html).toContain('file:///home/user/graph/assets/arch%20(1).png');
   });
 });
 
 describe('sanitizeExportKatexCss', () => {
   it('rewrites local file:// and hashed Vite KaTeX font URLs to CDN without leaking paths', () => {
     const raw =
-      '@font-face{src:url(file:///home/alice/.logseq/plugins/lsp/assets/KaTeX_AMS-Regular-BQhdFMY1.woff2) format("woff2"),url(file:///home/alice/other.ttf)}';
+      "@font-face{src:url(file:///Users/Alice's%20PC/.logseq/plugins/lsp/assets/KaTeX_AMS-Regular-BQhdFMY1.woff2) format(\"woff2\"),url(file:///Users/Alice's%20PC/other.ttf)}";
     const out = sanitizeExportKatexCss(raw);
     expect(out).not.toContain('file://');
-    expect(out).not.toContain('alice');
+    expect(out).not.toContain('Alice');
     expect(out).toContain(
       'url(https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/fonts/KaTeX_AMS-Regular.woff2)'
     );

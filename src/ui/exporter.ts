@@ -1,5 +1,5 @@
 import type { AspectRatio, SlideNode, ThemeId } from '../types';
-import { hydrateMermaidDiagrams, renderSlideHtml } from './renderer';
+import { escapeHtml, hydrateMermaidDiagrams, renderSlideHtml } from './renderer';
 import {
   getAspectRatioClass,
   getThemeClasses,
@@ -9,22 +9,13 @@ import {
 import mainCss from '../styles/main.css?inline';
 import katexCss from 'katex/dist/katex.min.css?inline';
 
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
 export function sanitizeExportKatexCss(css: string): string {
   return css
     .replace(
-      /url\((['"]?)[^)'"]*(?:\/|^)(KaTeX_[A-Za-z0-9_]+-[A-Za-z]+)(?:-[A-Za-z0-9_-]+)?\.(woff2|woff|ttf)\1\)/g,
+      /url\(\s*(['"]?)(?:(?!\1\))[^)])*?(?:\/|^)(KaTeX_[A-Za-z0-9_]+-[A-Za-z]+)(?:-[A-Za-z0-9_-]+)?\.(woff2|woff|ttf)\1\s*\)/g,
       'url(https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/fonts/$2.$3)'
     )
-    .replace(/url\((['"]?)file:\/\/[^)'"]+\1\)/gi, 'none');
+    .replace(/url\(\s*(['"]?)file:\/\/[^)]+\)/gi, 'none');
 }
 
 async function renderSlidesWithMermaid(
@@ -89,7 +80,10 @@ async function buildStandaloneDocument(
   const interactiveScript = forPrint
     ? `<script>
         window.addEventListener('load', () => {
-          setTimeout(() => window.print(), 250);
+          const ready = document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve();
+          Promise.race([ready, new Promise((r) => setTimeout(r, 800))]).then(() => {
+            setTimeout(() => window.print(), 150);
+          });
         });
       </script>`
     : `<script>
@@ -175,16 +169,27 @@ async function buildStandaloneDocument(
       }
       .lsp-export-slide.active { display: flex; }
       .lsp-export-controls {
-        position: fixed; bottom: 16px; right: 20px; display: flex; gap: 8px; align-items: center;
+        position: fixed; bottom: 16px; right: 20px; z-index: 10; display: flex; gap: 8px; align-items: center;
         background: rgba(15, 23, 42, 0.72); color: #fff; padding: 6px 12px; border-radius: 999px;
         font-family: system-ui, sans-serif; font-size: 13px;
       }
       .lsp-export-controls button {
         background: transparent; border: none; color: #fff; cursor: pointer; font-size: 14px; padding: 2px 6px;
       }
-      .lsp-export-progress { position: fixed; bottom: 0; left: 0; right: 0; height: 4px; background: rgba(128,128,128,0.2); }
+      .lsp-export-progress { position: fixed; bottom: 0; left: 0; right: 0; z-index: 10; height: 4px; background: rgba(128,128,128,0.2); }
       .lsp-export-progress-bar { height: 100%; background: #4f46e5; transition: width 0.2s ease; }
+      .lsp-export-deck .lsp-page-ref { cursor: default; }
     `;
+
+  const controlsMarkup = forPrint
+    ? ''
+    : `
+  <div class="lsp-export-controls">
+    <button id="prev">←</button>
+    <span id="counter">${slides.length > 0 ? `1 / ${slides.length}` : '0 / 0'}</span>
+    <button id="next">→</button>
+  </div>
+  <div class="lsp-export-progress"><div id="bar" class="lsp-export-progress-bar"></div></div>`;
 
   return `<!DOCTYPE html>
 <html lang="en" class="${themeClasses}">
@@ -201,13 +206,7 @@ async function buildStandaloneDocument(
 <body class="${themeClasses}">
   <main class="lsp-export-deck">
     ${slidesMarkup}
-  </main>
-  <div class="lsp-export-controls">
-    <button id="prev">←</button>
-    <span id="counter">${slides.length > 0 ? `1 / ${slides.length}` : '0 / 0'}</span>
-    <button id="next">→</button>
-  </div>
-  <div class="lsp-export-progress"><div id="bar" class="lsp-export-progress-bar"></div></div>
+  </main>${controlsMarkup}
   ${interactiveScript}
 </body>
 </html>`;
